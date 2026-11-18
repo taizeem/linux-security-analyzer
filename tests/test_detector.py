@@ -5,6 +5,7 @@ from security_analyzer.detector import (
     detect_failed_ssh_logins,
     detect_invalid_user_events,
     detect_multi_username_probes,
+    detect_repeated_ssh_failures,
     detect_successful_ssh_logins,
     group_failed_ssh_by_ip,
     group_successful_ssh_by_user,
@@ -149,6 +150,58 @@ class TestInvalidUserDetection(unittest.TestCase):
         findings = detect_multi_username_probes(
             events,
             min_usernames=3,
+            window_seconds=300,
+        )
+        self.assertEqual(findings, [])
+
+
+class TestRepeatedSshFailuresDetection(unittest.TestCase):
+    """Verify Checkpoint 3.4: sliding-window repeated SSH failure detection."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Parse sample_logs/auth_sample.log once for read-only detector tests."""
+        cls.sample_result = parse_log_file(SAMPLE_LOG, reference_year=2026)
+
+    def test_detect_repeated_ssh_failures_at_default_threshold(self) -> None:
+        """Verify both brute-force IPs are flagged when min_failures=5."""
+        findings = detect_repeated_ssh_failures(
+            self.sample_result.events,
+            min_failures=5,
+            window_seconds=300,
+        )
+        by_ip = {item["source_ip"]: item for item in findings}
+        self.assertEqual(set(by_ip.keys()), {"203.0.113.50", "198.51.100.77"})
+        self.assertEqual(by_ip["203.0.113.50"]["failure_count"], 6)
+        self.assertEqual(by_ip["198.51.100.77"]["failure_count"], 5)
+
+    def test_detect_repeated_ssh_failures_more_than_five(self) -> None:
+        """Verify min_failures=6 ('more than five') flags only 203.0.113.50."""
+        findings = detect_repeated_ssh_failures(
+            self.sample_result.events,
+            min_failures=6,
+            window_seconds=300,
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["source_ip"], "203.0.113.50")
+        self.assertEqual(findings[0]["failure_count"], 6)
+        self.assertEqual(len(findings[0]["evidence_events"]), 6)
+
+    def test_repeated_failures_outside_time_window_are_not_flagged(self) -> None:
+        """Verify slow failures spread across hours do not trigger a burst alert."""
+        lines = [
+            f"2026-11-18T0{hour}:00:00+05:30 host sshd[{hour}]: "
+            f"Failed password for root from 192.0.2.88 port 4100{hour} ssh2"
+            for hour in range(1, 7)
+        ]
+        events = [
+            ev
+            for idx, line in enumerate(lines, start=1)
+            if (ev := parse_log_line(line, line_number=idx)) is not None
+        ]
+        findings = detect_repeated_ssh_failures(
+            events,
+            min_failures=5,
             window_seconds=300,
         )
         self.assertEqual(findings, [])
