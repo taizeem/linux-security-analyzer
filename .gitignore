@@ -1,0 +1,48 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration (keep config.example.json tracked)
+config.json
+*.local.json
+.env
+
+# Sensitive logs and runtime application logs
+*.log
+*.log.*
+!sample_logs/*.log
+
+# SQLite databases and WAL/journal files
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Generated security reports
+reports/*.json
+reports/*.txt
+reports/*.html
+
+# Lock files and PID files
+*.lock
+*.pid
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
