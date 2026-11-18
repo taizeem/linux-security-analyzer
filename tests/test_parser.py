@@ -1,6 +1,11 @@
 import unittest
 
-from security_analyzer.parser import parse_syslog_header
+from security_analyzer.parser import (
+    extract_auth_fields,
+    normalize_timestamp,
+    parse_syslog_header,
+    validate_ip_address,
+)
 
 
 class TestSyslogHeaderParser(unittest.TestCase):
@@ -67,6 +72,83 @@ class TestSyslogHeaderParser(unittest.TestCase):
         self.assertIsNone(
             parse_syslog_header("CORRUPTED_LINE_WITHOUT_SYSLOG_HEADER_OR_TIMESTAMP")
         )
+
+
+class TestFieldExtraction(unittest.TestCase):
+    """Verify Stage 2 extraction of timestamps, usernames, and IPv4/IPv6 addresses."""
+
+    def test_normalize_iso8601_and_bsd_timestamps(self) -> None:
+        """Verify both ISO-8601 and BSD timestamps normalize to ISO format."""
+        iso = normalize_timestamp("2026-11-18T08:00:01.100000+05:30")
+        bsd = normalize_timestamp("Nov  5 03:12:09", reference_year=2026)
+
+        self.assertEqual(iso, "2026-11-18T08:00:01.100000+05:30")
+        self.assertEqual(bsd, "2026-11-05T03:12:09")
+        self.assertIsNone(normalize_timestamp("2026-02-30T08:00:00+00:00"))
+
+    def test_validate_ipv4_and_ipv6_addresses(self) -> None:
+        """Verify valid IPv4/IPv6 addresses pass and invalid octets return None."""
+        self.assertEqual(validate_ip_address("203.0.113.50"), "203.0.113.50")
+        self.assertEqual(
+            validate_ip_address("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+            "2001:db8:85a3::8a2e:370:7334",
+        )
+        self.assertIsNone(validate_ip_address("999.999.999.999"))
+        self.assertIsNone(validate_ip_address("not-an-ip"))
+
+    def test_extract_ssh_failed_valid_and_invalid_user(self) -> None:
+        """Verify username, IPv4, port, and invalid_user flag on SSH failures."""
+        valid_user_msg = "Failed password for root from 203.0.113.50 port 41004 ssh2"
+        invalid_user_msg = (
+            "Failed password for invalid user admin from 203.0.113.50 port 41001 ssh2"
+        )
+
+        f1 = extract_auth_fields("sshd", valid_user_msg)
+        self.assertEqual(f1["event_type"], "ssh_failed_login")
+        self.assertEqual(f1["username"], "root")
+        self.assertEqual(f1["source_ip"], "203.0.113.50")
+        self.assertEqual(f1["port"], 41004)
+        self.assertFalse(f1["is_invalid_user"])
+
+        f2 = extract_auth_fields("sshd", invalid_user_msg)
+        self.assertEqual(f2["event_type"], "ssh_failed_login")
+        self.assertEqual(f2["username"], "admin")
+        self.assertEqual(f2["source_ip"], "203.0.113.50")
+        self.assertTrue(f2["is_invalid_user"])
+
+    def test_extract_ssh_accepted_ipv6_login(self) -> None:
+        """Verify IPv6 address and publickey auth method extraction on SSH login."""
+        msg = (
+            "Accepted publickey for ipv6admin from "
+            "2001:db8:85a3::8a2e:370:7334 port 55100 ssh2"
+        )
+        fields = extract_auth_fields("sshd", msg)
+        self.assertEqual(fields["event_type"], "ssh_successful_login")
+        self.assertEqual(fields["username"], "ipv6admin")
+        self.assertEqual(fields["source_ip"], "2001:db8:85a3::8a2e:370:7334")
+        self.assertEqual(fields["port"], 55100)
+        self.assertEqual(fields["auth_method"], "publickey")
+
+    def test_extract_sudo_command_and_failure_fields(self) -> None:
+        """Verify sudo command execution and PAM failure field extraction."""
+        cmd_msg = (
+            "developer : TTY=pts/0 ; PWD=/home/developer ; USER=root ; "
+            "COMMAND=/usr/bin/systemctl status nginx"
+        )
+        fail_msg = (
+            "pam_unix(sudo:auth): authentication failure; logname=intern "
+            "uid=1002 euid=0 tty=/dev/pts/2 ruser=intern rhost=  user=intern"
+        )
+
+        f_cmd = extract_auth_fields("sudo", cmd_msg)
+        self.assertEqual(f_cmd["event_type"], "sudo_command")
+        self.assertEqual(f_cmd["username"], "developer")
+        self.assertEqual(f_cmd["target_user"], "root")
+        self.assertEqual(f_cmd["command"], "/usr/bin/systemctl status nginx")
+
+        f_fail = extract_auth_fields("sudo", fail_msg)
+        self.assertEqual(f_fail["event_type"], "sudo_auth_failure")
+        self.assertEqual(f_fail["username"], "intern")
 
 
 if __name__ == "__main__":
