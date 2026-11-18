@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Set
 
 from security_analyzer.models import AuthEvent
 
@@ -53,3 +53,86 @@ def group_successful_ssh_by_user(
         if event.username:
             grouped[event.username].append(event)
     return dict(grouped)
+
+
+def detect_invalid_user_events(events: Sequence[AuthEvent]) -> List[AuthEvent]:
+    """Return all SSH events targeting non-existent usernames in chronological order."""
+    invalid_events = [
+        event
+        for event in events
+        if event.service == "sshd" and event.is_invalid_user
+    ]
+    return _sort_chronologically(invalid_events)
+
+
+def detect_multi_username_probes(
+    events: Sequence[AuthEvent],
+    min_usernames: int = 3,
+    window_seconds: int = 600,
+) -> List[Dict[str, Any]]:
+    """Detect source IPs attempting authentication against multiple usernames.
+
+    Uses a sliding window of `window_seconds` across failed/invalid SSH events
+    grouped by source IP.
+    """
+    if min_usernames < 1:
+        raise ValueError("min_usernames must be at least 1")
+    if window_seconds < 0:
+        raise ValueError("window_seconds must be non-negative")
+
+    candidates_by_ip: Dict[str, List[AuthEvent]] = defaultdict(list)
+    for event in _sort_chronologically(events):
+        if (
+            event.service == "sshd"
+            and event.event_type in ("ssh_failed_login", "ssh_invalid_user")
+            and event.source_ip
+            and event.username
+        ):
+            candidates_by_ip[event.source_ip].append(event)
+
+    findings: List[Dict[str, Any]] = []
+
+    for source_ip, ip_events in candidates_by_ip.items():
+        best_window: List[AuthEvent] = []
+        best_users: Set[str] = set()
+
+        left = 0
+        for right in range(len(ip_events)):
+            while (
+                ip_events[right].epoch_seconds - ip_events[left].epoch_seconds
+                > window_seconds
+            ):
+                left += 1
+
+            window_slice = ip_events[left : right + 1]
+            distinct_users = {
+                ev.username for ev in window_slice if ev.username is not None
+            }
+            if len(distinct_users) >= min_usernames and len(
+                distinct_users
+            ) >= len(best_users):
+                best_users = distinct_users
+                best_window = window_slice
+
+        if best_window:
+            invalid_users = sorted(
+                {
+                    ev.username
+                    for ev in best_window
+                    if ev.is_invalid_user and ev.username is not None
+                }
+            )
+            findings.append(
+                {
+                    "source_ip": source_ip,
+                    "usernames": sorted(best_users),
+                    "invalid_usernames": invalid_users,
+                    "unique_username_count": len(best_users),
+                    "attempt_count": len(best_window),
+                    "first_seen": best_window[0].timestamp,
+                    "last_seen": best_window[-1].timestamp,
+                    "evidence_events": tuple(best_window),
+                }
+            )
+
+    return findings
