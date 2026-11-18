@@ -3,8 +3,11 @@ import unittest
 from security_analyzer.parser import (
     extract_auth_fields,
     normalize_timestamp,
+    parse_log_entry,
     parse_syslog_header,
+    sanitize_log_line,
     validate_ip_address,
+    validate_port,
 )
 
 
@@ -149,6 +152,51 @@ class TestFieldExtraction(unittest.TestCase):
         f_fail = extract_auth_fields("sudo", fail_msg)
         self.assertEqual(f_fail["event_type"], "sudo_auth_failure")
         self.assertEqual(f_fail["username"], "intern")
+
+
+class TestMalformedLogHandling(unittest.TestCase):
+    """Verify defensive handling of corrupted, injected, or invalid log lines."""
+
+    def test_sanitize_log_line_strips_null_bytes_and_escape_codes(self) -> None:
+        """Verify null bytes and terminal escape sequences are stripped safely."""
+        dirty = "2026-11-18T08:00:01Z host sshd[1]: Invalid user \x00bad\x1b[31muser\r\n"
+        cleaned = sanitize_log_line(dirty)
+        self.assertNotIn("\x00", cleaned)
+        self.assertNotIn("\x1b", cleaned)
+        self.assertTrue(cleaned.endswith("[31muser"))
+
+    def test_validate_port_bounds(self) -> None:
+        """Verify TCP/UDP port numbers must be within 1..65535."""
+        self.assertEqual(validate_port("22"), 22)
+        self.assertEqual(validate_port("65535"), 65535)
+        self.assertIsNone(validate_port("0"))
+        self.assertIsNone(validate_port("65536"))
+        self.assertIsNone(validate_port("abc"))
+
+    def test_parse_log_entry_rejects_invalid_ip_and_port_with_warning(self) -> None:
+        """Verify invalid IP or port returns None and logs a warning."""
+        bad_ip_line = (
+            "2026-11-18T08:01:02+05:30 bastion-01 sshd[10201]: "
+            "Failed password for root from 999.999.999.999 port 22 ssh2"
+        )
+        bad_port_line = (
+            "2026-11-18T08:01:02+05:30 bastion-01 sshd[10201]: "
+            "Failed password for root from 203.0.113.50 port 99999 ssh2"
+        )
+        bad_date_line = (
+            "2026-02-30T08:01:02+05:30 bastion-01 sshd[10201]: "
+            "Failed password for root from 203.0.113.50 port 22 ssh2"
+        )
+
+        with self.assertLogs("security_analyzer.parser", level="WARNING") as cm:
+            self.assertIsNone(parse_log_entry(bad_ip_line, line_number=10))
+            self.assertIsNone(parse_log_entry(bad_port_line, line_number=11))
+            self.assertIsNone(parse_log_entry(bad_date_line, line_number=12))
+
+        self.assertEqual(len(cm.output), 3)
+        self.assertIn("line 10", cm.output[0])
+        self.assertIn("line 11", cm.output[1])
+        self.assertIn("line 12", cm.output[2])
 
 
 if __name__ == "__main__":
