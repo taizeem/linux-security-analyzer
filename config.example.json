@@ -1,0 +1,26 @@
+{
+  "log_source": {
+    "default_path": "/var/log/auth.log",
+    "fallback_sample_path": "sample_logs/auth_sample.log",
+    "encoding": "utf-8"
+  },
+  "database": {
+    "db_path": "data/security_events.db"
+  },
+  "reporting": {
+    "output_dir": "reports",
+    "retention_days": 30
+  },
+  "logging": {
+    "app_log_path": "data/analyzer.log",
+    "level": "INFO"
+  },
+  "detection_rules": {
+    "brute_force_threshold": 5,
+    "brute_force_window_seconds": 300,
+    "multi_user_threshold": 3,
+    "multi_user_window_seconds": 600,
+    "sudo_failure_threshold": 3,
+    "sudo_failure_window_seconds": 300
+  }
+}
