@@ -136,3 +136,53 @@ def detect_multi_username_probes(
             )
 
     return findings
+
+
+def detect_repeated_ssh_failures(
+    events: Sequence[AuthEvent],
+    min_failures: int = 5,
+    window_seconds: int = 300,
+) -> List[Dict[str, Any]]:
+    """Detect source IPs with repeated failed SSH logins within a time window."""
+    if min_failures < 1:
+        raise ValueError("min_failures must be at least 1")
+    if window_seconds < 0:
+        raise ValueError("window_seconds must be non-negative")
+
+    grouped_failures = group_failed_ssh_by_ip(events)
+    findings: List[Dict[str, Any]] = []
+
+    for source_ip, ip_events in grouped_failures.items():
+        best_window: List[AuthEvent] = []
+        left = 0
+
+        for right in range(len(ip_events)):
+            while (
+                ip_events[right].epoch_seconds - ip_events[left].epoch_seconds
+                > window_seconds
+            ):
+                left += 1
+
+            window_slice = ip_events[left : right + 1]
+            if len(window_slice) >= min_failures and len(window_slice) >= len(
+                best_window
+            ):
+                best_window = window_slice
+
+        if best_window:
+            targeted_users = sorted(
+                {ev.username for ev in best_window if ev.username is not None}
+            )
+            findings.append(
+                {
+                    "source_ip": source_ip,
+                    "failure_count": len(best_window),
+                    "targeted_usernames": targeted_users,
+                    "first_seen": best_window[0].timestamp,
+                    "last_seen": best_window[-1].timestamp,
+                    "window_seconds": window_seconds,
+                    "evidence_events": tuple(best_window),
+                }
+            )
+
+    return findings
