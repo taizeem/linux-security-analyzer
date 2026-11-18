@@ -3,7 +3,9 @@ import unittest
 
 from security_analyzer.detector import (
     detect_failed_ssh_logins,
+    detect_successful_ssh_logins,
     group_failed_ssh_by_ip,
+    group_successful_ssh_by_user,
 )
 from security_analyzer.parser import parse_log_file, parse_log_line
 
@@ -27,7 +29,6 @@ class TestFailedSshDetection(unittest.TestCase):
         self.assertTrue(
             all(ev.event_type == "ssh_failed_login" for ev in failed_events)
         )
-        # Verify chronological ordering
         epochs = [ev.epoch_seconds for ev in failed_events]
         self.assertEqual(epochs, sorted(epochs))
 
@@ -54,6 +55,45 @@ class TestFailedSshDetection(unittest.TestCase):
 
         detected = detect_failed_ssh_logins([later, earlier])
         self.assertEqual([ev.port for ev in detected], [40001, 40002])
+
+
+class TestSuccessfulSshDetection(unittest.TestCase):
+    """Verify Checkpoint 3.2: successful SSH login detection and user grouping."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Parse sample_logs/auth_sample.log once for read-only detector tests."""
+        cls.sample_result = parse_log_file(SAMPLE_LOG, reference_year=2026)
+
+    def test_detect_successful_ssh_logins_from_sample_log(self) -> None:
+        """Verify all 3 successful SSH logins (IPv4 and IPv6) are detected."""
+        accepted = detect_successful_ssh_logins(self.sample_result.events)
+        self.assertEqual(len(accepted), 3)
+
+        usernames = [ev.username for ev in accepted]
+        methods = [ev.auth_method for ev in accepted]
+        ips = [ev.source_ip for ev in accepted]
+
+        self.assertEqual(usernames, ["developer", "deploy", "ipv6admin"])
+        self.assertEqual(methods, ["publickey", "password", "publickey"])
+        self.assertEqual(
+            ips,
+            [
+                "192.0.2.10",
+                "198.51.100.77",
+                "2001:db8:85a3::8a2e:370:7334",
+            ],
+        )
+
+    def test_group_successful_ssh_by_user(self) -> None:
+        """Verify successful SSH logins are accurately grouped by username."""
+        grouped = group_successful_ssh_by_user(self.sample_result.events)
+        self.assertEqual(
+            set(grouped.keys()),
+            {"developer", "deploy", "ipv6admin"},
+        )
+        self.assertEqual(grouped["deploy"][0].auth_method, "password")
+        self.assertEqual(grouped["deploy"][0].source_ip, "198.51.100.77")
 
 
 if __name__ == "__main__":
