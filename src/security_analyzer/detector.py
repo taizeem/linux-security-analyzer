@@ -32,3 +32,24 @@ def group_failed_ssh_by_ip(
         if event.source_ip:
             grouped[event.source_ip].append(event)
     return dict(grouped)
+
+
+def detect_successful_ssh_logins(events: Sequence[AuthEvent]) -> List[AuthEvent]:
+    """Return all successful SSH login events in chronological order."""
+    accepted = [
+        event
+        for event in events
+        if event.service == "sshd" and event.event_type == "ssh_successful_login"
+    ]
+    return _sort_chronologically(accepted)
+
+
+def group_successful_ssh_by_user(
+    events: Sequence[AuthEvent],
+) -> Dict[str, List[AuthEvent]]:
+    """Group successful SSH login events by username in chronological order."""
+    grouped: Dict[str, List[AuthEvent]] = defaultdict(list)
+    for event in detect_successful_ssh_logins(events):
+        if event.username:
+            grouped[event.username].append(event)
+    return dict(grouped)
