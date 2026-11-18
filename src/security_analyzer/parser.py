@@ -1,9 +1,12 @@
 from datetime import datetime
 import ipaddress
+from pathlib import Path
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
+from security_analyzer.collector import read_log_lines
 from security_analyzer.logger import get_logger
+from security_analyzer.models import AuthEvent, ParseResult
 
 
 logger = get_logger(__name__)
@@ -317,3 +320,49 @@ def parse_log_entry(
         "message": header["message"],
         "raw_line": header["raw_line"],
     }
+
+
+def parse_log_line(
+    raw_line: str,
+    line_number: int = 1,
+    reference_year: Optional[int] = None,
+) -> Optional[AuthEvent]:
+    """Parse a raw log line into an immutable AuthEvent model."""
+    parsed_dict = parse_log_entry(
+        raw_line=raw_line,
+        line_number=line_number,
+        reference_year=reference_year,
+    )
+    if parsed_dict is None:
+        return None
+    return AuthEvent.from_parsed_dict(parsed_dict)
+
+
+def parse_log_file(
+    file_path: Union[str, Path],
+    reference_year: Optional[int] = None,
+) -> ParseResult:
+    """Stream and parse an authentication log file into a ParseResult."""
+    events: List[AuthEvent] = []
+    total_lines = 0
+    malformed_lines = 0
+
+    for line_number, raw_line in read_log_lines(file_path):
+        total_lines += 1
+        event = parse_log_line(
+            raw_line=raw_line,
+            line_number=line_number,
+            reference_year=reference_year,
+        )
+        if event is None:
+            malformed_lines += 1
+        else:
+            events.append(event)
+
+    return ParseResult(
+        source_path=str(Path(file_path).resolve()),
+        events=tuple(events),
+        total_lines=total_lines,
+        valid_events=len(events),
+        malformed_lines=malformed_lines,
+    )
