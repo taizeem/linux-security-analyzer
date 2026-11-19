@@ -1,7 +1,8 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Sequence, Set
+from typing import Any, Dict, List, Sequence, Set, Optional
 
 from security_analyzer.models import AuthEvent, SecurityAlert, compute_alert_hash
+from security_analyzer.config import AppConfig, DetectionRulesConfig
 
 
 def _sort_chronologically(events: Sequence[AuthEvent]) -> List[AuthEvent]:
@@ -303,49 +304,94 @@ def detect_repeated_sudo_failures(
 
 
 class DetectionEngine:
-    """Orchestrates authentication detection rules and generates SecurityAlerts."""
+    """Orchestrates configurable authentication detection rules into SecurityAlerts."""
 
     def __init__(
         self,
-        brute_force_threshold: int = 5,
-        brute_force_window_seconds: int = 300,
-        multi_user_threshold: int = 3,
-        multi_user_window_seconds: int = 600,
-        success_after_failure_threshold: int = 3,
-        success_after_failure_window_seconds: int = 300,
-        sudo_failure_threshold: int = 3,
-        sudo_failure_window_seconds: int = 300,
+        rules_config: Optional[DetectionRulesConfig] = None,
+        brute_force_threshold: Optional[int] = None,
+        brute_force_window_seconds: Optional[int] = None,
+        multi_user_threshold: Optional[int] = None,
+        multi_user_window_seconds: Optional[int] = None,
+        success_after_failure_threshold: Optional[int] = None,
+        success_after_failure_window_seconds: Optional[int] = None,
+        sudo_failure_threshold: Optional[int] = None,
+        sudo_failure_window_seconds: Optional[int] = None,
     ) -> None:
-        self.brute_force_threshold = brute_force_threshold
-        self.brute_force_window_seconds = brute_force_window_seconds
-        self.multi_user_threshold = multi_user_threshold
-        self.multi_user_window_seconds = multi_user_window_seconds
-        self.success_after_failure_threshold = success_after_failure_threshold
-        self.success_after_failure_window_seconds = (
-            success_after_failure_window_seconds
+        base = rules_config or DetectionRulesConfig()
+        self.rules_config = DetectionRulesConfig(
+            brute_force_threshold=(
+                brute_force_threshold
+                if brute_force_threshold is not None
+                else base.brute_force_threshold
+            ),
+            brute_force_window_seconds=(
+                brute_force_window_seconds
+                if brute_force_window_seconds is not None
+                else base.brute_force_window_seconds
+            ),
+            multi_user_threshold=(
+                multi_user_threshold
+                if multi_user_threshold is not None
+                else base.multi_user_threshold
+            ),
+            multi_user_window_seconds=(
+                multi_user_window_seconds
+                if multi_user_window_seconds is not None
+                else base.multi_user_window_seconds
+            ),
+            success_after_failure_threshold=(
+                success_after_failure_threshold
+                if success_after_failure_threshold is not None
+                else base.success_after_failure_threshold
+            ),
+            success_after_failure_window_seconds=(
+                success_after_failure_window_seconds
+                if success_after_failure_window_seconds is not None
+                else base.success_after_failure_window_seconds
+            ),
+            sudo_failure_threshold=(
+                sudo_failure_threshold
+                if sudo_failure_threshold is not None
+                else base.sudo_failure_threshold
+            ),
+            sudo_failure_window_seconds=(
+                sudo_failure_window_seconds
+                if sudo_failure_window_seconds is not None
+                else base.sudo_failure_window_seconds
+            ),
+            enabled_rules=dict(base.enabled_rules),
         )
-        self.sudo_failure_threshold = sudo_failure_threshold
-        self.sudo_failure_window_seconds = sudo_failure_window_seconds
+
+    @classmethod
+    def from_config(cls, app_config: AppConfig) -> "DetectionEngine":
+        """Construct a DetectionEngine from a validated AppConfig."""
+        return cls(rules_config=app_config.detection_rules)
 
     def evaluate(self, events: Sequence[AuthEvent]) -> List[SecurityAlert]:
-        """Run all detection rules against parsed events and return alerts."""
+        """Run all enabled detection rules against parsed events and return alerts."""
         if not events:
             return []
 
         alerts: List[SecurityAlert] = []
-        alerts.extend(self._run_repeated_ssh_failure_rule(events))
-        alerts.extend(self._run_multi_username_probe_rule(events))
-        alerts.extend(self._run_success_after_failures_rule(events))
-        alerts.extend(self._run_repeated_sudo_failure_rule(events))
+        if self.rules_config.is_rule_enabled("SSH_REPEATED_FAILURES"):
+            alerts.extend(self._run_repeated_ssh_failure_rule(events))
+        if self.rules_config.is_rule_enabled("SSH_MULTI_USER_PROBE"):
+            alerts.extend(self._run_multi_username_probe_rule(events))
+        if self.rules_config.is_rule_enabled("SSH_SUCCESS_AFTER_FAILURES"):
+            alerts.extend(self._run_success_after_failures_rule(events))
+        if self.rules_config.is_rule_enabled("SUDO_REPEATED_FAILURES"):
+            alerts.extend(self._run_repeated_sudo_failure_rule(events))
         return alerts
 
     def _run_repeated_ssh_failure_rule(
         self, events: Sequence[AuthEvent]
     ) -> List[SecurityAlert]:
+        cfg = self.rules_config
         findings = detect_repeated_ssh_failures(
             events,
-            min_failures=self.brute_force_threshold,
-            window_seconds=self.brute_force_window_seconds,
+            min_failures=cfg.brute_force_threshold,
+            window_seconds=cfg.brute_force_window_seconds,
         )
         alerts: List[SecurityAlert] = []
         for finding in findings:
@@ -359,7 +405,7 @@ class DetectionEngine:
                     description=(
                         f"Observed {finding['failure_count']} failed SSH login "
                         f"attempts from {finding['source_ip']} within "
-                        f"{self.brute_force_window_seconds}s targeting: {users_label}. "
+                        f"{cfg.brute_force_window_seconds}s targeting: {users_label}. "
                         "Evidence establishes repeated failed authentication; verify "
                         "whether this is automated password guessing or a misconfigured client."
                     ),
@@ -382,10 +428,11 @@ class DetectionEngine:
     def _run_multi_username_probe_rule(
         self, events: Sequence[AuthEvent]
     ) -> List[SecurityAlert]:
+        cfg = self.rules_config
         findings = detect_multi_username_probes(
             events,
-            min_usernames=self.multi_user_threshold,
-            window_seconds=self.multi_user_window_seconds,
+            min_usernames=cfg.multi_user_threshold,
+            window_seconds=cfg.multi_user_window_seconds,
         )
         alerts: List[SecurityAlert] = []
         for finding in findings:
@@ -399,7 +446,7 @@ class DetectionEngine:
                     description=(
                         f"Observed {finding['source_ip']} attempting SSH logins "
                         f"across {finding['unique_username_count']} distinct usernames "
-                        f"({users_label}) within {self.multi_user_window_seconds}s. "
+                        f"({users_label}) within {cfg.multi_user_window_seconds}s. "
                         "Evidence is consistent with username enumeration or scanning."
                     ),
                     source_ip=finding["source_ip"],
@@ -421,10 +468,11 @@ class DetectionEngine:
     def _run_success_after_failures_rule(
         self, events: Sequence[AuthEvent]
     ) -> List[SecurityAlert]:
+        cfg = self.rules_config
         findings = detect_success_after_failures(
             events,
-            min_failures=self.success_after_failure_threshold,
-            window_seconds=self.success_after_failure_window_seconds,
+            min_failures=cfg.success_after_failure_threshold,
+            window_seconds=cfg.success_after_failure_window_seconds,
         )
         alerts: List[SecurityAlert] = []
         for finding in findings:
@@ -442,7 +490,7 @@ class DetectionEngine:
                         f"Account '{finding['username']}' authenticated via "
                         f"{finding['auth_method']} from {finding['source_ip']} after "
                         f"{finding['preceding_failure_count']} failed attempts within "
-                        f"{self.success_after_failure_window_seconds}s. "
+                        f"{cfg.success_after_failure_window_seconds}s. "
                         "Evidence warrants immediate review to distinguish legitimate "
                         "password typos from successful credential guessing."
                     ),
@@ -465,10 +513,11 @@ class DetectionEngine:
     def _run_repeated_sudo_failure_rule(
         self, events: Sequence[AuthEvent]
     ) -> List[SecurityAlert]:
+        cfg = self.rules_config
         findings = detect_repeated_sudo_failures(
             events,
-            min_failures=self.sudo_failure_threshold,
-            window_seconds=self.sudo_failure_window_seconds,
+            min_failures=cfg.sudo_failure_threshold,
+            window_seconds=cfg.sudo_failure_window_seconds,
         )
         alerts: List[SecurityAlert] = []
         for finding in findings:
@@ -482,7 +531,7 @@ class DetectionEngine:
                     description=(
                         f"User '{finding['username']}' generated "
                         f"{finding['failure_count']} failed sudo authentication "
-                        f"records within {self.sudo_failure_window_seconds}s "
+                        f"records within {cfg.sudo_failure_window_seconds}s "
                         f"(attempted commands: {cmds}). Evidence establishes repeated "
                         "failed privilege escalation checks."
                     ),
