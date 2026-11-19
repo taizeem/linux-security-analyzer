@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Any, Dict, List, Sequence, Set
 
-from security_analyzer.models import AuthEvent
+from security_analyzer.models import AuthEvent, SecurityAlert, compute_alert_hash
 
 
 def _sort_chronologically(events: Sequence[AuthEvent]) -> List[AuthEvent]:
@@ -10,11 +10,7 @@ def _sort_chronologically(events: Sequence[AuthEvent]) -> List[AuthEvent]:
 
 
 def detect_failed_ssh_logins(events: Sequence[AuthEvent]) -> List[AuthEvent]:
-    """Return all failed SSH login events in chronological order.
-
-    Includes both valid-user failures ('Failed password for root...') and
-    invalid-user password failures ('Failed password for invalid user admin...').
-    """
+    """Return all failed SSH login events in chronological order."""
     failed = [
         event
         for event in events
@@ -70,11 +66,7 @@ def detect_multi_username_probes(
     min_usernames: int = 3,
     window_seconds: int = 600,
 ) -> List[Dict[str, Any]]:
-    """Detect source IPs attempting authentication against multiple usernames.
-
-    Uses a sliding window of `window_seconds` across failed/invalid SSH events
-    grouped by source IP.
-    """
+    """Detect source IPs attempting authentication against multiple usernames."""
     if min_usernames < 1:
         raise ValueError("min_usernames must be at least 1")
     if window_seconds < 0:
@@ -308,3 +300,204 @@ def detect_repeated_sudo_failures(
             )
 
     return findings
+
+
+class DetectionEngine:
+    """Orchestrates authentication detection rules and generates SecurityAlerts."""
+
+    def __init__(
+        self,
+        brute_force_threshold: int = 5,
+        brute_force_window_seconds: int = 300,
+        multi_user_threshold: int = 3,
+        multi_user_window_seconds: int = 600,
+        success_after_failure_threshold: int = 3,
+        success_after_failure_window_seconds: int = 300,
+        sudo_failure_threshold: int = 3,
+        sudo_failure_window_seconds: int = 300,
+    ) -> None:
+        self.brute_force_threshold = brute_force_threshold
+        self.brute_force_window_seconds = brute_force_window_seconds
+        self.multi_user_threshold = multi_user_threshold
+        self.multi_user_window_seconds = multi_user_window_seconds
+        self.success_after_failure_threshold = success_after_failure_threshold
+        self.success_after_failure_window_seconds = (
+            success_after_failure_window_seconds
+        )
+        self.sudo_failure_threshold = sudo_failure_threshold
+        self.sudo_failure_window_seconds = sudo_failure_window_seconds
+
+    def evaluate(self, events: Sequence[AuthEvent]) -> List[SecurityAlert]:
+        """Run all detection rules against parsed events and return alerts."""
+        if not events:
+            return []
+
+        alerts: List[SecurityAlert] = []
+        alerts.extend(self._run_repeated_ssh_failure_rule(events))
+        alerts.extend(self._run_multi_username_probe_rule(events))
+        alerts.extend(self._run_success_after_failures_rule(events))
+        alerts.extend(self._run_repeated_sudo_failure_rule(events))
+        return alerts
+
+    def _run_repeated_ssh_failure_rule(
+        self, events: Sequence[AuthEvent]
+    ) -> List[SecurityAlert]:
+        findings = detect_repeated_ssh_failures(
+            events,
+            min_failures=self.brute_force_threshold,
+            window_seconds=self.brute_force_window_seconds,
+        )
+        alerts: List[SecurityAlert] = []
+        for finding in findings:
+            users_label = ", ".join(finding["targeted_usernames"]) or "unknown"
+            alerts.append(
+                SecurityAlert(
+                    rule_id="SSH_REPEATED_FAILURES",
+                    rule_name="Repeated SSH Authentication Failures",
+                    severity="medium",
+                    title=f"Repeated SSH failures from {finding['source_ip']}",
+                    description=(
+                        f"Observed {finding['failure_count']} failed SSH login "
+                        f"attempts from {finding['source_ip']} within "
+                        f"{self.brute_force_window_seconds}s targeting: {users_label}. "
+                        "Evidence establishes repeated failed authentication; verify "
+                        "whether this is automated password guessing or a misconfigured client."
+                    ),
+                    source_ip=finding["source_ip"],
+                    username=None,
+                    first_seen=finding["first_seen"],
+                    last_seen=finding["last_seen"],
+                    event_count=finding["failure_count"],
+                    alert_hash=compute_alert_hash(
+                        "SSH_REPEATED_FAILURES",
+                        finding["source_ip"],
+                        None,
+                        finding["first_seen"],
+                        finding["last_seen"],
+                    ),
+                )
+            )
+        return alerts
+
+    def _run_multi_username_probe_rule(
+        self, events: Sequence[AuthEvent]
+    ) -> List[SecurityAlert]:
+        findings = detect_multi_username_probes(
+            events,
+            min_usernames=self.multi_user_threshold,
+            window_seconds=self.multi_user_window_seconds,
+        )
+        alerts: List[SecurityAlert] = []
+        for finding in findings:
+            users_label = ", ".join(finding["usernames"])
+            alerts.append(
+                SecurityAlert(
+                    rule_id="SSH_MULTI_USER_PROBE",
+                    rule_name="Multi-Username SSH Enumeration",
+                    severity="medium",
+                    title=f"Multi-username SSH probe from {finding['source_ip']}",
+                    description=(
+                        f"Observed {finding['source_ip']} attempting SSH logins "
+                        f"across {finding['unique_username_count']} distinct usernames "
+                        f"({users_label}) within {self.multi_user_window_seconds}s. "
+                        "Evidence is consistent with username enumeration or scanning."
+                    ),
+                    source_ip=finding["source_ip"],
+                    username=None,
+                    first_seen=finding["first_seen"],
+                    last_seen=finding["last_seen"],
+                    event_count=finding["attempt_count"],
+                    alert_hash=compute_alert_hash(
+                        "SSH_MULTI_USER_PROBE",
+                        finding["source_ip"],
+                        None,
+                        finding["first_seen"],
+                        finding["last_seen"],
+                    ),
+                )
+            )
+        return alerts
+
+    def _run_success_after_failures_rule(
+        self, events: Sequence[AuthEvent]
+    ) -> List[SecurityAlert]:
+        findings = detect_success_after_failures(
+            events,
+            min_failures=self.success_after_failure_threshold,
+            window_seconds=self.success_after_failure_window_seconds,
+        )
+        alerts: List[SecurityAlert] = []
+        for finding in findings:
+            alerts.append(
+                SecurityAlert(
+                    rule_id="SSH_SUCCESS_AFTER_FAILURES",
+                    rule_name="Successful SSH Login After Repeated Failures",
+                    severity="high",
+                    title=(
+                        f"SSH login for {finding['username']} after "
+                        f"{finding['preceding_failure_count']} failures from "
+                        f"{finding['source_ip']}"
+                    ),
+                    description=(
+                        f"Account '{finding['username']}' authenticated via "
+                        f"{finding['auth_method']} from {finding['source_ip']} after "
+                        f"{finding['preceding_failure_count']} failed attempts within "
+                        f"{self.success_after_failure_window_seconds}s. "
+                        "Evidence warrants immediate review to distinguish legitimate "
+                        "password typos from successful credential guessing."
+                    ),
+                    source_ip=finding["source_ip"],
+                    username=finding["username"],
+                    first_seen=finding["first_failure_seen"],
+                    last_seen=finding["success_timestamp"],
+                    event_count=finding["preceding_failure_count"] + 1,
+                    alert_hash=compute_alert_hash(
+                        "SSH_SUCCESS_AFTER_FAILURES",
+                        finding["source_ip"],
+                        finding["username"],
+                        finding["first_failure_seen"],
+                        finding["success_timestamp"],
+                    ),
+                )
+            )
+        return alerts
+
+    def _run_repeated_sudo_failure_rule(
+        self, events: Sequence[AuthEvent]
+    ) -> List[SecurityAlert]:
+        findings = detect_repeated_sudo_failures(
+            events,
+            min_failures=self.sudo_failure_threshold,
+            window_seconds=self.sudo_failure_window_seconds,
+        )
+        alerts: List[SecurityAlert] = []
+        for finding in findings:
+            cmds = ", ".join(finding["attempted_commands"]) or "not recorded"
+            alerts.append(
+                SecurityAlert(
+                    rule_id="SUDO_REPEATED_FAILURES",
+                    rule_name="Repeated Sudo Authentication Failures",
+                    severity="medium",
+                    title=f"Repeated sudo failures for user {finding['username']}",
+                    description=(
+                        f"User '{finding['username']}' generated "
+                        f"{finding['failure_count']} failed sudo authentication "
+                        f"records within {self.sudo_failure_window_seconds}s "
+                        f"(attempted commands: {cmds}). Evidence establishes repeated "
+                        "failed privilege escalation checks."
+                    ),
+                    source_ip=None,
+                    username=finding["username"],
+                    first_seen=finding["first_seen"],
+                    last_seen=finding["last_seen"],
+                    event_count=finding["failure_count"],
+                    alert_hash=compute_alert_hash(
+                        "SUDO_REPEATED_FAILURES",
+                        None,
+                        finding["username"],
+                        finding["first_seen"],
+                        finding["last_seen"],
+                    ),
+                )
+            )
+        return alerts
