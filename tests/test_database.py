@@ -181,36 +181,100 @@ class TestDuplicatePrevention(unittest.TestCase):
 
         self.assertEqual(self.db.count_events(), 25)
         self.assertEqual(self.db.count_alerts(), 5)
-def test_incremental_append_only_ingests_newly_added_lines(self) -> None:
-        """Verify appending 2 new lines to a log ingests only those 2 new events."""
-        rolling_log = self.base_path / "rolling_auth.log"
-        initial_content = SAMPLE_LOG.read_text(encoding="utf-8")
-        if not initial_content.endswith("\n"):
-            initial_content += "\n"
-        rolling_log.write_text(initial_content, encoding="utf-8")
 
-        parsed_1 = parse_log_file(rolling_log, reference_year=2026)
-        alerts_1 = DetectionEngine().evaluate(parsed_1.events)
-        summary_1 = self.db.persist_scan_results(parsed_1, alerts_1)
-        self.assertEqual(summary_1["new_events"], 25)
+    def test_incremental_append_only_ingests_newly_added_lines(self) -> None:
+            """Verify appending 2 new lines to a log ingests only those 2 new events."""
+            rolling_log = self.base_path / "rolling_auth.log"
+            initial_content = SAMPLE_LOG.read_text(encoding="utf-8")
+            if not initial_content.endswith("\n"):
+                initial_content += "\n"
+            rolling_log.write_text(initial_content, encoding="utf-8")
 
-        with open(rolling_log, mode="a", encoding="utf-8") as handle:
-            handle.write(
-                "2026-11-18T08:10:00.000000+05:30 bastion-01 sshd[10991]: "
-                "Accepted publickey for qa from 192.0.2.44 port 56001 ssh2\n"
-            )
-            handle.write(
-                "2026-11-18T08:10:05.000000+05:30 bastion-01 sudo: qa : "
-                "TTY=pts/3 ; PWD=/home/qa ; USER=root ; COMMAND=/usr/bin/uptime\n"
-            )
+            parsed_1 = parse_log_file(rolling_log, reference_year=2026)
+            alerts_1 = DetectionEngine().evaluate(parsed_1.events)
+            summary_1 = self.db.persist_scan_results(parsed_1, alerts_1)
+            self.assertEqual(summary_1["new_events"], 25)
 
-        parsed_2 = parse_log_file(rolling_log, reference_year=2026)
-        alerts_2 = DetectionEngine().evaluate(parsed_2.events)
-        summary_2 = self.db.persist_scan_results(parsed_2, alerts_2)
+            with open(rolling_log, mode="a", encoding="utf-8") as handle:
+                handle.write(
+                    "2026-11-18T08:10:00.000000+05:30 bastion-01 sshd[10991]: "
+                    "Accepted publickey for qa from 192.0.2.44 port 56001 ssh2\n"
+                )
+                handle.write(
+                    "2026-11-18T08:10:05.000000+05:30 bastion-01 sudo: qa : "
+                    "TTY=pts/3 ; PWD=/home/qa ; USER=root ; COMMAND=/usr/bin/uptime\n"
+                )
 
-        self.assertEqual(summary_2["new_events"], 2)
-        self.assertEqual(summary_2["duplicate_events"], 25)
-        self.assertEqual(self.db.count_events(), 27)
+            parsed_2 = parse_log_file(rolling_log, reference_year=2026)
+            alerts_2 = DetectionEngine().evaluate(parsed_2.events)
+            summary_2 = self.db.persist_scan_results(parsed_2, alerts_2)
+
+            self.assertEqual(summary_2["new_events"], 2)
+            self.assertEqual(summary_2["duplicate_events"], 25)
+            self.assertEqual(self.db.count_events(), 27)
+
+class TestHistoricalQueries(unittest.TestCase):
+
+    def setUp(self) -> None:
+        """Populate an isolated test database from sample_logs/auth_sample.log."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = DatabaseManager(Path(self.temp_dir.name) / "queries.db")
+        self.db.initialize()
+
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        alerts = DetectionEngine().evaluate(parsed.events)
+        self.db.persist_scan_results(parsed, alerts)
+
+    def tearDown(self) -> None:
+        """Clean up temporary database directory."""
+        self.temp_dir.cleanup()
+
+    def test_query_events_by_ip_user_type_and_time_range(self) -> None:
+        """Verify event filters return accurate subsets."""
+        by_ip = self.db.query_events(source_ip="203.0.113.50")
+        self.assertEqual(len(by_ip), 9)
+
+        failed_deploy = self.db.query_events(
+            username="deploy",
+            event_type="ssh_failed_login",
+        )
+        self.assertEqual(len(failed_deploy), 5)
+
+        bounded = self.db.query_events(
+            since="2026-11-18T08:03:00+05:30",
+            until="2026-11-18T08:03:59+05:30",
+        )
+        self.assertEqual(len(bounded), 4)
+        self.assertTrue(all(ev["service"] == "sudo" for ev in bounded))
+
+    def test_query_alerts_orders_by_severity_and_decodes_evidence(self) -> None:
+        """Verify alerts sort critical->high->medium and decode evidence JSON."""
+        all_alerts = self.db.query_alerts()
+        self.assertEqual(len(all_alerts), 5)
+        self.assertEqual(all_alerts[0]["severity"], "critical")
+        self.assertEqual(all_alerts[1]["severity"], "high")
+        self.assertIsInstance(all_alerts[0]["evidence"], list)
+        self.assertEqual(len(all_alerts[0]["evidence"]), 6)
+
+        critical_only = self.db.query_alerts(severity="CRITICAL")
+        self.assertEqual(len(critical_only), 1)
+        self.assertEqual(critical_only[0]["username"], "deploy")
+
+    def test_get_statistics_returns_expected_aggregates(self) -> None:
+        """Verify get_statistics computes counts, severity breakdown, and top lists."""
+        stats = self.db.get_statistics(top_n=3)
+        self.assertEqual(stats["total_events"], 25)
+        self.assertEqual(stats["total_successful_logins"], 3)
+        self.assertEqual(stats["total_failed_logins"], 11)
+        self.assertEqual(stats["total_sudo_events"], 5)
+        self.assertEqual(stats["total_alerts"], 5)
+        self.assertEqual(
+            stats["alerts_by_severity"],
+            {"critical": 1, "high": 1, "medium": 3, "low": 0},
+        )
+        self.assertEqual(stats["top_source_ips"][0]["source_ip"], "203.0.113.50")
+        self.assertEqual(stats["top_source_ips"][0]["count"], 9)
+        self.assertEqual(len(stats["recent_scan_runs"]), 1)
 
 
 if __name__ == "__main__":

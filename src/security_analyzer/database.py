@@ -381,3 +381,213 @@ class DatabaseManager:
             "new_alerts": new_alerts,
             "duplicate_alerts": duplicate_alerts,
         }
+    def query_events(
+        self,
+        event_type: Optional[str] = None,
+        username: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        service: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Query stored authentication events with optional filters."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        if username:
+            conditions.append("username = ?")
+            params.append(username)
+        if source_ip:
+            conditions.append("source_ip = ?")
+            params.append(source_ip)
+        if service:
+            conditions.append("service = ?")
+            params.append(service)
+        if since:
+            conditions.append("timestamp >= ?")
+            params.append(since)
+        if until:
+            conditions.append("timestamp <= ?")
+            params.append(until)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            f"SELECT * FROM auth_events {where_clause} "
+            "ORDER BY timestamp DESC, id DESC LIMIT ?;"
+        )
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["is_invalid_user"] = bool(item["is_invalid_user"])
+                results.append(item)
+            return results
+
+    def query_alerts(
+        self,
+        severity: Optional[str] = None,
+        rule_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        username: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Query stored security alerts ordered by severity priority and recency."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if severity:
+            conditions.append("severity = ?")
+            params.append(severity.lower())
+        if rule_id:
+            conditions.append("rule_id = ?")
+            params.append(rule_id)
+        if source_ip:
+            conditions.append("source_ip = ?")
+            params.append(source_ip)
+        if username:
+            conditions.append("username = ?")
+            params.append(username)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            f"SELECT * FROM security_alerts {where_clause} "
+            "ORDER BY CASE severity "
+            "WHEN 'critical' THEN 4 "
+            "WHEN 'high' THEN 3 "
+            "WHEN 'medium' THEN 2 "
+            "WHEN 'low' THEN 1 "
+            "ELSE 0 END DESC, last_seen DESC, id DESC LIMIT ?;"
+        )
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["evidence"] = json.loads(item.pop("evidence_json"))
+                results.append(item)
+            return results
+
+    def get_statistics(self, top_n: int = 10) -> Dict[str, Any]:
+        """Compute aggregated authentication and alert statistics from SQLite."""
+        if top_n < 1:
+            raise ValueError("top_n must be at least 1")
+
+        with self._connect() as conn:
+            total_events = int(
+                conn.execute("SELECT COUNT(*) AS c FROM auth_events;").fetchone()["c"]
+            )
+            total_successful_logins = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM auth_events "
+                    "WHERE event_type = 'ssh_successful_login';"
+                ).fetchone()["c"]
+            )
+            total_failed_logins = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM auth_events "
+                    "WHERE event_type = 'ssh_failed_login';"
+                ).fetchone()["c"]
+            )
+            total_invalid_users = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM auth_events "
+                    "WHERE is_invalid_user = 1;"
+                ).fetchone()["c"]
+            )
+            total_sudo_events = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM auth_events "
+                    "WHERE service = 'sudo' "
+                    "AND event_type IN ('sudo_command', 'sudo_auth_failure');"
+                ).fetchone()["c"]
+            )
+            total_alerts = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM security_alerts;"
+                ).fetchone()["c"]
+            )
+
+            severity_rows = conn.execute(
+                "SELECT severity, COUNT(*) AS cnt FROM security_alerts "
+                "GROUP BY severity;"
+            ).fetchall()
+            alerts_by_severity: Dict[str, int] = {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+            }
+            for row in severity_rows:
+                alerts_by_severity[str(row["severity"])] = int(row["cnt"])
+
+            top_ips_rows = conn.execute(
+                """
+                SELECT source_ip, COUNT(*) AS event_count
+                FROM auth_events
+                WHERE source_ip IS NOT NULL
+                GROUP BY source_ip
+                ORDER BY event_count DESC, source_ip ASC
+                LIMIT ?;
+                """,
+                (top_n,),
+            ).fetchall()
+            top_source_ips = [
+                {"source_ip": str(r["source_ip"]), "count": int(r["event_count"])}
+                for r in top_ips_rows
+            ]
+
+            top_users_rows = conn.execute(
+                """
+                SELECT username, COUNT(*) AS event_count
+                FROM auth_events
+                WHERE username IS NOT NULL
+                  AND event_type IN ('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure')
+                GROUP BY username
+                ORDER BY event_count DESC, username ASC
+                LIMIT ?;
+                """,
+                (top_n,),
+            ).fetchall()
+            top_targeted_usernames = [
+                {"username": str(r["username"]), "count": int(r["event_count"])}
+                for r in top_users_rows
+            ]
+
+            recent_runs_rows = conn.execute(
+                """
+                SELECT id, started_at, source_path, total_lines, valid_events,
+                       malformed_lines, new_events_stored, alerts_generated
+                FROM scan_runs
+                ORDER BY id DESC
+                LIMIT 5;
+                """
+            ).fetchall()
+            recent_scan_runs = [dict(row) for row in recent_runs_rows]
+
+        return {
+            "total_events": total_events,
+            "total_successful_logins": total_successful_logins,
+            "total_failed_logins": total_failed_logins,
+            "total_invalid_users": total_invalid_users,
+            "total_sudo_events": total_sudo_events,
+            "total_alerts": total_alerts,
+            "alerts_by_severity": alerts_by_severity,
+            "top_source_ips": top_source_ips,
+            "top_targeted_usernames": top_targeted_usernames,
+            "recent_scan_runs": recent_scan_runs,
+        }
