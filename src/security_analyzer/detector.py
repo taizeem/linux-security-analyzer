@@ -1,9 +1,20 @@
 from collections import defaultdict
 from typing import Any, Dict, List, Sequence, Set, Optional
 
-from security_analyzer.models import AuthEvent, SecurityAlert, compute_alert_hash
+from security_analyzer.models import AuthEvent, SecurityAlert, compute_alert_hash, Severity
 from security_analyzer.config import AppConfig, DetectionRulesConfig
 
+SENSITIVE_SUDO_COMMANDS = (
+    "visudo",
+    "/bin/bash",
+    "/bin/sh",
+    "/usr/bin/su",
+    "/bin/su",
+    "passwd",
+    "usermod",
+    "/etc/shadow",
+    "/etc/sudoers",
+)
 
 def _sort_chronologically(events: Sequence[AuthEvent]) -> List[AuthEvent]:
     """Return events sorted by timestamp (epoch_seconds) and line_number."""
@@ -369,7 +380,7 @@ class DetectionEngine:
         return cls(rules_config=app_config.detection_rules)
 
     def evaluate(self, events: Sequence[AuthEvent]) -> List[SecurityAlert]:
-        """Run all enabled detection rules against parsed events and return alerts."""
+        """Run all enabled detection rules and return alerts sorted by severity."""
         if not events:
             return []
 
@@ -382,7 +393,50 @@ class DetectionEngine:
             alerts.extend(self._run_success_after_failures_rule(events))
         if self.rules_config.is_rule_enabled("SUDO_REPEATED_FAILURES"):
             alerts.extend(self._run_repeated_sudo_failure_rule(events))
-        return alerts
+
+        return sorted(
+            alerts,
+            key=lambda alert: (-alert.severity_rank, alert.last_seen, alert.rule_id),
+        )
+
+    def _classify_brute_force_severity(self, failure_count: int) -> str:
+        high_cutoff = max(10, self.rules_config.brute_force_threshold * 2)
+        if failure_count >= high_cutoff:
+            return Severity.HIGH.value
+        return Severity.MEDIUM.value
+
+    def _classify_multi_user_severity(self, unique_username_count: int) -> str:
+        high_cutoff = max(6, self.rules_config.multi_user_threshold * 2)
+        if unique_username_count >= high_cutoff:
+            return Severity.HIGH.value
+        return Severity.MEDIUM.value
+
+    @staticmethod
+    def _classify_success_after_failures_severity(
+        username: Optional[str],
+        preceding_failure_count: int,
+        auth_method: Optional[str],
+    ) -> str:
+        if username == "root" or (
+            preceding_failure_count >= 5 and auth_method == "password"
+        ):
+            return Severity.CRITICAL.value
+        return Severity.HIGH.value
+
+    def _classify_sudo_failure_severity(
+        self,
+        failure_count: int,
+        attempted_commands: Sequence[str],
+    ) -> str:
+        high_cutoff = max(6, self.rules_config.sudo_failure_threshold * 2)
+        targets_sensitive = any(
+            token in cmd
+            for cmd in attempted_commands
+            for token in SENSITIVE_SUDO_COMMANDS
+        )
+        if targets_sensitive or failure_count >= high_cutoff:
+            return Severity.HIGH.value
+        return Severity.MEDIUM.value
 
     def _run_repeated_ssh_failure_rule(
         self, events: Sequence[AuthEvent]
@@ -396,11 +450,14 @@ class DetectionEngine:
         alerts: List[SecurityAlert] = []
         for finding in findings:
             users_label = ", ".join(finding["targeted_usernames"]) or "unknown"
+            severity = self._classify_brute_force_severity(
+                finding["failure_count"]
+            )
             alerts.append(
                 SecurityAlert(
                     rule_id="SSH_REPEATED_FAILURES",
                     rule_name="Repeated SSH Authentication Failures",
-                    severity="medium",
+                    severity=severity,
                     title=f"Repeated SSH failures from {finding['source_ip']}",
                     description=(
                         f"Observed {finding['failure_count']} failed SSH login "
@@ -437,11 +494,14 @@ class DetectionEngine:
         alerts: List[SecurityAlert] = []
         for finding in findings:
             users_label = ", ".join(finding["usernames"])
+            severity = self._classify_multi_user_severity(
+                finding["unique_username_count"]
+            )
             alerts.append(
                 SecurityAlert(
                     rule_id="SSH_MULTI_USER_PROBE",
                     rule_name="Multi-Username SSH Enumeration",
-                    severity="medium",
+                    severity=severity,
                     title=f"Multi-username SSH probe from {finding['source_ip']}",
                     description=(
                         f"Observed {finding['source_ip']} attempting SSH logins "
@@ -476,11 +536,16 @@ class DetectionEngine:
         )
         alerts: List[SecurityAlert] = []
         for finding in findings:
+            severity = self._classify_success_after_failures_severity(
+                username=finding["username"],
+                preceding_failure_count=finding["preceding_failure_count"],
+                auth_method=finding["auth_method"],
+            )
             alerts.append(
                 SecurityAlert(
                     rule_id="SSH_SUCCESS_AFTER_FAILURES",
                     rule_name="Successful SSH Login After Repeated Failures",
-                    severity="high",
+                    severity=severity,
                     title=(
                         f"SSH login for {finding['username']} after "
                         f"{finding['preceding_failure_count']} failures from "
@@ -522,11 +587,15 @@ class DetectionEngine:
         alerts: List[SecurityAlert] = []
         for finding in findings:
             cmds = ", ".join(finding["attempted_commands"]) or "not recorded"
+            severity = self._classify_sudo_failure_severity(
+                failure_count=finding["failure_count"],
+                attempted_commands=finding["attempted_commands"],
+            )
             alerts.append(
                 SecurityAlert(
                     rule_id="SUDO_REPEATED_FAILURES",
                     rule_name="Repeated Sudo Authentication Failures",
-                    severity="medium",
+                    severity=severity,
                     title=f"Repeated sudo failures for user {finding['username']}",
                     description=(
                         f"User '{finding['username']}' generated "

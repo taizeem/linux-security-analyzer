@@ -1,7 +1,27 @@
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
 import hashlib
 from typing import Any, Dict, Optional, Tuple
+
+
+class Severity(str, Enum):
+    """Standardized alert severity levels ordered from lowest to highest urgency."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+SEVERITY_RANK: Dict[str, int] = {
+    Severity.LOW.value: 1,
+    Severity.MEDIUM.value: 2,
+    Severity.HIGH.value: 3,
+    Severity.CRITICAL.value: 4,
+}
+
+VALID_SEVERITIES = frozenset(SEVERITY_RANK.keys())
 
 
 def compute_event_hash(
@@ -110,6 +130,24 @@ class SecurityAlert:
     event_count: int
     alert_hash: str
     evidence: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        normalized = (
+            self.severity.value
+            if isinstance(self.severity, Severity)
+            else str(self.severity).lower()
+        )
+        if normalized not in VALID_SEVERITIES:
+            raise ValueError(
+                f"Invalid alert severity '{self.severity}'. "
+                f"Expected one of: {sorted(VALID_SEVERITIES)}"
+            )
+        object.__setattr__(self, "severity", normalized)
+
+    @property
+    def severity_rank(self) -> int:
+        """Return numeric priority rank (1=low .. 4=critical) for sorting."""
+        return SEVERITY_RANK[self.severity]
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the alert to a plain dictionary for JSON or SQLite."""
