@@ -1,7 +1,13 @@
-"""SQLite database schema and persistence layer for Linux Security Log Analyzer."""
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+import sqlite3
+from typing import Iterator, List, Tuple, Union
 
-from typing import Tuple
+from security_analyzer.logger import get_logger
 
+
+logger = get_logger(__name__)
 
 SCHEMA_TABLES_SQL: Tuple[str, ...] = (
     """
@@ -61,3 +67,80 @@ SCHEMA_TABLES_SQL: Tuple[str, ...] = (
     );
     """,
 )
+
+
+def _utc_now_iso() -> str:
+    """Return the current UTC timestamp in ISO-8601 format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+class DatabaseManager:
+    """Manages SQLite connections, schema initialization, and persistence."""
+
+    def __init__(self, db_path: Union[str, Path]) -> None:
+        self.db_path = Path(db_path).expanduser().resolve()
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a configured SQLite connection with automatic commit/rollback."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def initialize(self) -> None:
+        """Create all required tables idempotently."""
+        with self._connect() as conn:
+            for statement in SCHEMA_TABLES_SQL:
+                conn.execute(statement)
+        logger.debug("Initialized SQLite database at %s", self.db_path)
+
+    def list_tables(self) -> List[str]:
+        """Return a sorted list of user-defined tables in the database."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name;"
+            ).fetchall()
+            return [str(row["name"]) for row in rows]
+
+    def create_scan_run(
+        self,
+        source_path: str,
+        total_lines: int = 0,
+        valid_events: int = 0,
+        malformed_lines: int = 0,
+        new_events_stored: int = 0,
+        alerts_generated: int = 0,
+    ) -> int:
+        """Insert a scan_runs audit row and return its generated integer ID."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    started_at, source_path, total_lines, valid_events,
+                    malformed_lines, new_events_stored, alerts_generated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    _utc_now_iso(),
+                    source_path,
+                    total_lines,
+                    valid_events,
+                    malformed_lines,
+                    new_events_stored,
+                    alerts_generated,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            return int(cursor.lastrowid)
