@@ -235,3 +235,76 @@ def detect_success_after_failures(
             )
 
     return findings
+
+
+def detect_sudo_events(events: Sequence[AuthEvent]) -> List[AuthEvent]:
+    """Return all sudo command execution and sudo auth failure events in order."""
+    sudo_events = [
+        event
+        for event in events
+        if event.service == "sudo"
+        and event.event_type in ("sudo_command", "sudo_auth_failure")
+    ]
+    return _sort_chronologically(sudo_events)
+
+
+def detect_repeated_sudo_failures(
+    events: Sequence[AuthEvent],
+    min_failures: int = 3,
+    window_seconds: int = 300,
+) -> List[Dict[str, Any]]:
+    """Detect users with repeated failed sudo authentication attempts in a window."""
+    if min_failures < 1:
+        raise ValueError("min_failures must be at least 1")
+    if window_seconds < 0:
+        raise ValueError("window_seconds must be non-negative")
+
+    failures_by_user: Dict[str, List[AuthEvent]] = defaultdict(list)
+    for event in detect_sudo_events(events):
+        if event.event_type == "sudo_auth_failure" and event.username:
+            failures_by_user[event.username].append(event)
+
+    findings: List[Dict[str, Any]] = []
+
+    for username, user_events in failures_by_user.items():
+        best_window: List[AuthEvent] = []
+        left = 0
+
+        for right in range(len(user_events)):
+            while (
+                user_events[right].epoch_seconds - user_events[left].epoch_seconds
+                > window_seconds
+            ):
+                left += 1
+
+            window_slice = user_events[left : right + 1]
+            if len(window_slice) >= min_failures and len(window_slice) >= len(
+                best_window
+            ):
+                best_window = window_slice
+
+        if best_window:
+            commands = sorted(
+                {ev.command for ev in best_window if ev.command is not None}
+            )
+            target_users = sorted(
+                {
+                    ev.target_user
+                    for ev in best_window
+                    if ev.target_user is not None
+                }
+            )
+            findings.append(
+                {
+                    "username": username,
+                    "failure_count": len(best_window),
+                    "target_users": target_users,
+                    "attempted_commands": commands,
+                    "first_seen": best_window[0].timestamp,
+                    "last_seen": best_window[-1].timestamp,
+                    "window_seconds": window_seconds,
+                    "evidence_events": tuple(best_window),
+                }
+            )
+
+    return findings
