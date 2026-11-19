@@ -2,9 +2,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
-from typing import Iterator, List, Tuple, Union
+from typing import Iterator, List, Tuple, Union, Optional, Sequence
 
 from security_analyzer.logger import get_logger
+from security_analyzer.models import AuthEvent
 
 
 logger = get_logger(__name__)
@@ -144,3 +145,64 @@ class DatabaseManager:
             )
             assert cursor.lastrowid is not None
             return int(cursor.lastrowid)
+
+    def store_events(
+        self,
+        events: Sequence[AuthEvent],
+        scan_run_id: Optional[int] = None,
+    ) -> int:
+        """Persist AuthEvent records in a single transaction.
+
+        Returns the exact number of newly inserted rows.
+        """
+        if not events:
+            return 0
+
+        now_iso = _utc_now_iso()
+        rows = [
+            (
+                scan_run_id,
+                ev.line_number,
+                ev.timestamp,
+                ev.hostname,
+                ev.service,
+                ev.pid,
+                ev.event_type,
+                ev.username,
+                ev.source_ip,
+                ev.port,
+                ev.auth_method,
+                ev.target_user,
+                ev.command,
+                1 if ev.is_invalid_user else 0,
+                ev.message,
+                ev.raw_line,
+                ev.event_hash,
+                now_iso,
+            )
+            for ev in events
+        ]
+
+        with self._connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO auth_events (
+                    scan_run_id, line_number, timestamp, hostname, service,
+                    pid, event_type, username, source_ip, port, auth_method,
+                    target_user, command, is_invalid_user, message, raw_line,
+                    event_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
+            )
+            inserted = conn.total_changes - before
+
+        logger.debug("Stored %d new authentication events", inserted)
+        return inserted
+
+    def count_events(self) -> int:
+        """Return total number of authentication events stored in auth_events."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS cnt FROM auth_events;").fetchone()
+            return int(row["cnt"])

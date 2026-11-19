@@ -4,6 +4,11 @@ import tempfile
 import unittest
 
 from security_analyzer.database import DatabaseManager
+from security_analyzer.parser import parse_log_file
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestDatabaseInitialization(unittest.TestCase):
@@ -57,6 +62,40 @@ class TestDatabaseInitialization(unittest.TestCase):
         )
         self.assertEqual(run_1, 1)
         self.assertEqual(run_2, 2)
+
+
+class TestEventPersistence(unittest.TestCase):
+    """Verify Checkpoint 5.3: storing parsed AuthEvents in SQLite."""
+
+    def setUp(self) -> None:
+        """Create a fresh initialized test database for each test."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "events.db"
+        self.db = DatabaseManager(self.db_path)
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        """Clean up temporary database directory."""
+        self.temp_dir.cleanup()
+
+    def test_store_events_persists_all_sample_events_with_scan_run_id(self) -> None:
+        """Verify all 25 valid events from auth_sample.log are stored accurately."""
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        run_id = self.db.create_scan_run(
+            source_path=parsed.source_path,
+            total_lines=parsed.total_lines,
+            valid_events=parsed.valid_events,
+            malformed_lines=parsed.malformed_lines,
+        )
+
+        inserted = self.db.store_events(parsed.events, scan_run_id=run_id)
+        self.assertEqual(inserted, 25)
+        self.assertEqual(self.db.count_events(), 25)
+
+    def test_store_empty_event_list_returns_zero(self) -> None:
+        """Verify storing an empty sequence returns 0 without database errors."""
+        self.assertEqual(self.db.store_events([]), 0)
+        self.assertEqual(self.db.count_events(), 0)
 
 
 if __name__ == "__main__":
