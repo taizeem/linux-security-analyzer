@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Sequence, Set, Optional
+from typing import Any, Dict, List, Sequence, Set, Optional, Tuple
 
 from security_analyzer.models import AuthEvent, SecurityAlert, compute_alert_hash, Severity
 from security_analyzer.config import AppConfig, DetectionRulesConfig
@@ -328,7 +328,11 @@ class DetectionEngine:
         success_after_failure_window_seconds: Optional[int] = None,
         sudo_failure_threshold: Optional[int] = None,
         sudo_failure_window_seconds: Optional[int] = None,
+        max_evidence_events: int = 20,
     ) -> None:
+        if max_evidence_events < 2:
+            raise ValueError("max_evidence_events must be at least 2")
+        self.max_evidence_events = max_evidence_events
         base = rules_config or DetectionRulesConfig()
         self.rules_config = DetectionRulesConfig(
             brute_force_threshold=(
@@ -378,6 +382,37 @@ class DetectionEngine:
     def from_config(cls, app_config: AppConfig) -> "DetectionEngine":
         """Construct a DetectionEngine from a validated AppConfig."""
         return cls(rules_config=app_config.detection_rules)
+
+    def _build_evidence_records(
+        self,
+        evidence_events: Sequence[AuthEvent],
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Convert AuthEvents into bounded, JSON-serializable evidence records."""
+        if len(evidence_events) <= self.max_evidence_events:
+            selected = list(evidence_events)
+        else:
+            head_count = self.max_evidence_events // 2
+            tail_count = self.max_evidence_events - head_count
+            selected = list(evidence_events[:head_count]) + list(
+                evidence_events[-tail_count:]
+            )
+
+        records: List[Dict[str, Any]] = []
+        for ev in selected:
+            record: Dict[str, Any] = {
+                "line_number": ev.line_number,
+                "timestamp": ev.timestamp,
+                "event_type": ev.event_type,
+                "username": ev.username,
+                "source_ip": ev.source_ip,
+                "port": ev.port,
+                "event_hash": ev.event_hash,
+                "message": ev.message,
+            }
+            if ev.command is not None:
+                record["command"] = ev.command
+            records.append(record)
+        return tuple(records)
 
     def evaluate(self, events: Sequence[AuthEvent]) -> List[SecurityAlert]:
         """Run all enabled detection rules and return alerts sorted by severity."""
@@ -478,6 +513,9 @@ class DetectionEngine:
                         finding["first_seen"],
                         finding["last_seen"],
                     ),
+                    evidence=self._build_evidence_records(
+                        finding["evidence_events"]
+                    ),
                 )
             )
         return alerts
@@ -520,6 +558,9 @@ class DetectionEngine:
                         None,
                         finding["first_seen"],
                         finding["last_seen"],
+                    ),
+                    evidence=self._build_evidence_records(
+                        finding["evidence_events"]
                     ),
                 )
             )
@@ -571,6 +612,9 @@ class DetectionEngine:
                         finding["first_failure_seen"],
                         finding["success_timestamp"],
                     ),
+                    evidence=self._build_evidence_records(
+                        finding["evidence_events"]
+                    ),
                 )
             )
         return alerts
@@ -615,6 +659,9 @@ class DetectionEngine:
                         finding["username"],
                         finding["first_seen"],
                         finding["last_seen"],
+                    ),
+                    evidence=self._build_evidence_records(
+                        finding["evidence_events"]
                     ),
                 )
             )
