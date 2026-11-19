@@ -186,3 +186,52 @@ def detect_repeated_ssh_failures(
             )
 
     return findings
+
+
+def detect_success_after_failures(
+    events: Sequence[AuthEvent],
+    min_failures: int = 3,
+    window_seconds: int = 300,
+) -> List[Dict[str, Any]]:
+    """Detect successful SSH logins preceded by repeated failures from the same IP."""
+    if min_failures < 1:
+        raise ValueError("min_failures must be at least 1")
+    if window_seconds < 0:
+        raise ValueError("window_seconds must be non-negative")
+
+    failures_by_ip = group_failed_ssh_by_ip(events)
+    successful_logins = detect_successful_ssh_logins(events)
+    findings: List[Dict[str, Any]] = []
+
+    for success in successful_logins:
+        if not success.source_ip:
+            continue
+
+        ip_failures = failures_by_ip.get(success.source_ip, [])
+        if not ip_failures:
+            continue
+
+        preceding_failures = [
+            fail
+            for fail in ip_failures
+            if (fail.epoch_seconds, fail.line_number)
+            < (success.epoch_seconds, success.line_number)
+            and (success.epoch_seconds - fail.epoch_seconds) <= window_seconds
+        ]
+
+        if len(preceding_failures) >= min_failures:
+            evidence = tuple(preceding_failures) + (success,)
+            findings.append(
+                {
+                    "source_ip": success.source_ip,
+                    "username": success.username,
+                    "auth_method": success.auth_method,
+                    "preceding_failure_count": len(preceding_failures),
+                    "first_failure_seen": preceding_failures[0].timestamp,
+                    "success_timestamp": success.timestamp,
+                    "window_seconds": window_seconds,
+                    "evidence_events": evidence,
+                }
+            )
+
+    return findings
