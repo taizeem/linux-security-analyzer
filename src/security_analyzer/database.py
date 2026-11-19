@@ -1,11 +1,12 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sqlite3
 from typing import Iterator, List, Tuple, Union, Optional, Sequence
 
 from security_analyzer.logger import get_logger
-from security_analyzer.models import AuthEvent
+from security_analyzer.models import AuthEvent, SecurityAlert
 
 
 logger = get_logger(__name__)
@@ -205,4 +206,62 @@ class DatabaseManager:
         """Return total number of authentication events stored in auth_events."""
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS cnt FROM auth_events;").fetchone()
+            return int(row["cnt"])
+
+    def store_alerts(
+        self,
+        alerts: Sequence[SecurityAlert],
+        scan_run_id: Optional[int] = None,
+    ) -> int:
+        """Persist SecurityAlert records in a single transaction.
+
+        Returns the exact number of newly inserted alert rows.
+        """
+        if not alerts:
+            return 0
+
+        now_iso = _utc_now_iso()
+        rows = [
+            (
+                scan_run_id,
+                alert.rule_id,
+                alert.rule_name,
+                alert.severity,
+                alert.title,
+                alert.description,
+                alert.source_ip,
+                alert.username,
+                alert.first_seen,
+                alert.last_seen,
+                alert.event_count,
+                json.dumps(list(alert.evidence), separators=(",", ":")),
+                alert.alert_hash,
+                now_iso,
+            )
+            for alert in alerts
+        ]
+
+        with self._connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO security_alerts (
+                    scan_run_id, rule_id, rule_name, severity, title,
+                    description, source_ip, username, first_seen, last_seen,
+                    event_count, evidence_json, alert_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
+            )
+            inserted = conn.total_changes - before
+
+        logger.debug("Stored %d new security alerts", inserted)
+        return inserted
+
+    def count_alerts(self) -> int:
+        """Return total number of security alerts stored in security_alerts."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM security_alerts;"
+            ).fetchone()
             return int(row["cnt"])
