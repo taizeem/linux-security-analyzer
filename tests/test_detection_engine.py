@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 import unittest
 
 from security_analyzer.detector import DetectionEngine
 from security_analyzer.models import SecurityAlert, Severity
-from security_analyzer.parser import parse_log_file
+from security_analyzer.parser import parse_log_file, parse_log_line
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -11,7 +12,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestDetectionEngine(unittest.TestCase):
-    """Verify Checkpoint 4.1–4.3: DetectionEngine orchestration and severity levels."""
+    """Verify Checkpoint 4.1–4.4: orchestration, severity levels, and evidence."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -54,19 +55,15 @@ class TestDetectionEngine(unittest.TestCase):
         engine = DetectionEngine()
         alerts = engine.evaluate(self.sample_result.events)
 
-        # Highest priority first: critical -> high -> medium
         ranks = [alert.severity_rank for alert in alerts]
         self.assertEqual(ranks, sorted(ranks, reverse=True))
 
-        # 5 password failures + accepted password for deploy -> critical
         self.assertEqual(alerts[0].rule_id, "SSH_SUCCESS_AFTER_FAILURES")
         self.assertEqual(alerts[0].severity, Severity.CRITICAL.value)
 
-        # Repeated sudo failures attempting /usr/sbin/visudo -> high
         self.assertEqual(alerts[1].rule_id, "SUDO_REPEATED_FAILURES")
         self.assertEqual(alerts[1].severity, Severity.HIGH.value)
 
-        # Remaining brute-force and multi-user probes -> medium
         self.assertTrue(
             all(alert.severity == Severity.MEDIUM.value for alert in alerts[2:])
         )
@@ -87,6 +84,58 @@ class TestDetectionEngine(unittest.TestCase):
                 event_count=1,
                 alert_hash="a" * 64,
             )
+
+    def test_all_generated_alerts_include_structured_json_serializable_evidence(
+        self,
+    ) -> None:
+        """Verify every alert attaches evidence with line_number, timestamp, and hash."""
+        engine = DetectionEngine()
+        alerts = engine.evaluate(self.sample_result.events)
+
+        for alert in alerts:
+            self.assertGreater(len(alert.evidence), 0)
+            for item in alert.evidence:
+                self.assertIn("line_number", item)
+                self.assertIn("timestamp", item)
+                self.assertIn("event_hash", item)
+                self.assertIn("message", item)
+            # Confirm full alert + evidence serializes cleanly to JSON
+            encoded = json.dumps(alert.to_dict())
+            self.assertIn(alert.alert_hash, encoded)
+
+        # Verify sudo alert evidence includes the attempted visudo command
+        sudo_alert = next(
+            a for a in alerts if a.rule_id == "SUDO_REPEATED_FAILURES"
+        )
+        commands = [ev.get("command") for ev in sudo_alert.evidence if ev.get("command")]
+        self.assertIn("/usr/sbin/visudo", commands)
+
+    def test_evidence_truncation_preserves_head_and_tail_of_large_burst(self) -> None:
+        """Verify large event bursts cap evidence while keeping first and last events."""
+        lines = [
+            f"2026-11-18T08:00:{sec:02d}+05:30 host sshd[{sec}]: "
+            f"Failed password for root from 203.0.113.99 port {40000 + sec} ssh2"
+            for sec in range(1, 15)
+        ]
+        events = [
+            ev
+            for idx, line in enumerate(lines, start=1)
+            if (ev := parse_log_line(line, line_number=idx)) is not None
+        ]
+
+        engine = DetectionEngine(brute_force_threshold=5, max_evidence_events=6)
+        alerts = engine.evaluate(events)
+        brute_alert = next(
+            a for a in alerts if a.rule_id == "SSH_REPEATED_FAILURES"
+        )
+
+        self.assertEqual(brute_alert.event_count, 14)
+        self.assertEqual(len(brute_alert.evidence), 6)
+        # First 3 lines (1, 2, 3) and last 3 lines (12, 13, 14) preserved
+        self.assertEqual(
+            [item["line_number"] for item in brute_alert.evidence],
+            [1, 2, 3, 12, 13, 14],
+        )
 
 
 if __name__ == "__main__":
