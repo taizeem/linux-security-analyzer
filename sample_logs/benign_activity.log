@@ -1,0 +1,19 @@
+2026-11-18T09:00:01.100000+05:30 prod-app-01 sshd[20101]: Accepted publickey for alice from 192.0.2.11 port 51001 ssh2
+2026-11-18T09:00:15.200000+05:30 prod-app-01 sudo: alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/systemctl status postgresql
+2026-11-18T09:01:00.100000+05:30 prod-app-01 sshd[20102]: Failed password for bob from 192.0.2.12 port 51002 ssh2
+2026-11-18T09:01:08.100000+05:30 prod-app-01 sshd[20103]: Failed password for bob from 192.0.2.12 port 51003 ssh2
+2026-11-18T09:01:15.100000+05:30 prod-app-01 sshd[20104]: Accepted password for bob from 192.0.2.12 port 51004 ssh2
+2026-11-18T09:02:00.100000+05:30 prod-app-01 sudo: pam_unix(sudo:auth): authentication failure; logname=bob uid=1001 euid=0 tty=/dev/pts/1 ruser=bob rhost=  user=bob
+2026-11-18T09:02:09.100000+05:30 prod-app-01 sudo: bob : TTY=pts/1 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/journalctl -u nginx -n 20
+2026-11-18T09:05:00.100000+05:30 prod-app-01 sshd[20105]: Accepted publickey for ops from 2001:db8::42 port 52001 ssh2
+2026-11-18T09:10:00.100000+05:30 prod-app-01 sshd[20106]: Failed password for guest from 198.51.100.11 port 40001 ssh2
+2026-11-18T09:10:05.100000+05:30 prod-app-01 sshd[20107]: Failed password for guest from 198.51.100.12 port 40002 ssh2
+2026-11-18T09:10:10.100000+05:30 prod-app-01 sshd[20108]: Failed password for guest from 198.51.100.13 port 40003 ssh2
+2026-11-18T09:10:15.100000+05:30 prod-app-01 sshd[20109]: Failed password for guest from 198.51.100.14 port 40004 ssh2
+2026-11-18T09:10:20.100000+05:30 prod-app-01 sshd[20110]: Failed password for guest from 198.51.100.15 port 40005 ssh2
+2026-11-18T10:00:00.100000+05:30 prod-app-01 sshd[20201]: Failed password for alice from 192.0.2.11 port 53001 ssh2
+2026-11-18T11:00:00.100000+05:30 prod-app-01 sshd[20301]: Failed password for alice from 192.0.2.11 port 53002 ssh2
+2026-11-18T12:00:00.100000+05:30 prod-app-01 sshd[20401]: Failed password for alice from 192.0.2.11 port 53003 ssh2
+2026-11-18T13:00:00.100000+05:30 prod-app-01 sshd[20501]: Failed password for alice from 192.0.2.11 port 53004 ssh2
+2026-11-18T14:00:00.100000+05:30 prod-app-01 sshd[20601]: Failed password for alice from 192.0.2.11 port 53005 ssh2
+2026-11-18T14:05:00.100000+05:30 prod-app-01 CRON[20700]: pam_unix(cron:session): session opened for user root(uid=0) by (uid=0)
