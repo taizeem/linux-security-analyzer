@@ -6,6 +6,7 @@ from security_analyzer.detector import (
     detect_invalid_user_events,
     detect_multi_username_probes,
     detect_repeated_ssh_failures,
+    detect_success_after_failures,
     detect_successful_ssh_logins,
     group_failed_ssh_by_ip,
     group_successful_ssh_by_user,
@@ -202,6 +203,74 @@ class TestRepeatedSshFailuresDetection(unittest.TestCase):
         findings = detect_repeated_ssh_failures(
             events,
             min_failures=5,
+            window_seconds=300,
+        )
+        self.assertEqual(findings, [])
+
+
+class TestSuccessAfterFailuresDetection(unittest.TestCase):
+    """Verify Checkpoint 3.5: successful login after repeated failures detection."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Parse sample_logs/auth_sample.log once for read-only detector tests."""
+        cls.sample_result = parse_log_file(SAMPLE_LOG, reference_year=2026)
+
+    def test_detect_success_after_failures_on_sample_log(self) -> None:
+        """Verify 198.51.100.77 (deploy) is flagged after 5 failures + 1 success."""
+        findings = detect_success_after_failures(
+            self.sample_result.events,
+            min_failures=3,
+            window_seconds=300,
+        )
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding["source_ip"], "198.51.100.77")
+        self.assertEqual(finding["username"], "deploy")
+        self.assertEqual(finding["auth_method"], "password")
+        self.assertEqual(finding["preceding_failure_count"], 5)
+        self.assertEqual(len(finding["evidence_events"]), 6)
+        self.assertEqual(
+            finding["evidence_events"][-1].event_type,
+            "ssh_successful_login",
+        )
+
+    def test_failures_occurring_after_success_do_not_trigger(self) -> None:
+        """Verify failures logged AFTER a successful login are not counted."""
+        lines = [
+            "2026-11-18T08:00:00+05:30 host sshd[1]: Accepted publickey for ops from 192.0.2.50 port 50001 ssh2",
+            "2026-11-18T08:00:10+05:30 host sshd[2]: Failed password for ops from 192.0.2.50 port 50002 ssh2",
+            "2026-11-18T08:00:20+05:30 host sshd[3]: Failed password for ops from 192.0.2.50 port 50003 ssh2",
+            "2026-11-18T08:00:30+05:30 host sshd[4]: Failed password for ops from 192.0.2.50 port 50004 ssh2",
+        ]
+        events = [
+            ev
+            for idx, line in enumerate(lines, start=1)
+            if (ev := parse_log_line(line, line_number=idx)) is not None
+        ]
+        findings = detect_success_after_failures(
+            events,
+            min_failures=3,
+            window_seconds=300,
+        )
+        self.assertEqual(findings, [])
+
+    def test_old_failures_outside_window_do_not_trigger(self) -> None:
+        """Verify failures older than window_seconds before success do not trigger."""
+        lines = [
+            "2026-11-18T08:00:00+05:30 host sshd[1]: Failed password for ops from 192.0.2.51 port 50001 ssh2",
+            "2026-11-18T08:00:05+05:30 host sshd[2]: Failed password for ops from 192.0.2.51 port 50002 ssh2",
+            "2026-11-18T08:00:10+05:30 host sshd[3]: Failed password for ops from 192.0.2.51 port 50003 ssh2",
+            "2026-11-18T09:00:00+05:30 host sshd[4]: Accepted password for ops from 192.0.2.51 port 50004 ssh2",
+        ]
+        events = [
+            ev
+            for idx, line in enumerate(lines, start=1)
+            if (ev := parse_log_line(line, line_number=idx)) is not None
+        ]
+        findings = detect_success_after_failures(
+            events,
+            min_failures=3,
             window_seconds=300,
         )
         self.assertEqual(findings, [])
