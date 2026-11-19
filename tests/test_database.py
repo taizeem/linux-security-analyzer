@@ -148,6 +148,68 @@ class TestAlertPersistence(unittest.TestCase):
         self.assertEqual(self.db.store_alerts([]), 0)
         self.assertEqual(self.db.count_alerts(), 0)
 
+class TestDuplicatePrevention(unittest.TestCase):
+    """Verify Checkpoint 5.5: idempotent re-scans and incremental log ingestion."""
+
+    def setUp(self) -> None:
+        """Create a fresh initialized test database for each test."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.db = DatabaseManager(self.base_path / "dedup.db")
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        """Clean up temporary database directory."""
+        self.temp_dir.cleanup()
+
+    def test_rescanning_identical_log_inserts_zero_duplicates(self) -> None:
+        """Verify scanning the exact same log twice stores 0 duplicate events/alerts."""
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        alerts = DetectionEngine().evaluate(parsed.events)
+
+        first = self.db.persist_scan_results(parsed, alerts)
+        self.assertEqual(first["new_events"], 25)
+        self.assertEqual(first["duplicate_events"], 0)
+        self.assertEqual(first["new_alerts"], 5)
+        self.assertEqual(first["duplicate_alerts"], 0)
+
+        second = self.db.persist_scan_results(parsed, alerts)
+        self.assertEqual(second["new_events"], 0)
+        self.assertEqual(second["duplicate_events"], 25)
+        self.assertEqual(second["new_alerts"], 0)
+        self.assertEqual(second["duplicate_alerts"], 5)
+
+        self.assertEqual(self.db.count_events(), 25)
+        self.assertEqual(self.db.count_alerts(), 5)
+
+    def test_incremental_append_only_ingests_newly_added_lines(self) -> None:
+        """Verify appending 2 new lines to a log ingests only those 2 new events."""
+        rolling_log = self.base_path / "rolling_auth.log"
+        rolling_log.write_text(SAMPLE_LOG.read_text(encoding="utf-8"), encoding="utf-8")
+
+        parsed_1 = parse_log_file(rolling_log, reference_year=2026)
+        alerts_1 = DetectionEngine().evaluate(parsed_1.events)
+        summary_1 = self.db.persist_scan_results(parsed_1, alerts_1)
+        self.assertEqual(summary_1["new_events"], 25)
+
+        with open(rolling_log, mode="a", encoding="utf-8") as handle:
+            handle.write(
+                "2026-11-18T08:10:00.000000+05:30 bastion-01 sshd[10991]: "
+                "Accepted publickey for qa from 192.0.2.44 port 56001 ssh2\n"
+            )
+            handle.write(
+                "2026-11-18T08:10:05.000000+05:30 bastion-01 sudo: qa : "
+                "TTY=pts/3 ; PWD=/home/qa ; USER=root ; COMMAND=/usr/bin/uptime\n"
+            )
+
+        parsed_2 = parse_log_file(rolling_log, reference_year=2026)
+        alerts_2 = DetectionEngine().evaluate(parsed_2.events)
+        summary_2 = self.db.persist_scan_results(parsed_2, alerts_2)
+
+        self.assertEqual(summary_2["new_events"], 2)
+        self.assertEqual(summary_2["duplicate_events"], 25)
+        self.assertEqual(self.db.count_events(), 27)
+
 
 if __name__ == "__main__":
     unittest.main()

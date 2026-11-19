@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Iterator, List, Tuple, Union, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 from security_analyzer.logger import get_logger
-from security_analyzer.models import AuthEvent, SecurityAlert
+from security_analyzer.models import AuthEvent, SecurityAlert, ParseResult
 
 
 logger = get_logger(__name__)
@@ -265,3 +265,119 @@ class DatabaseManager:
                 "SELECT COUNT(*) AS cnt FROM security_alerts;"
             ).fetchone()
             return int(row["cnt"])
+    def persist_scan_results(
+        self,
+        parse_result: ParseResult,
+        alerts: Sequence[SecurityAlert],
+    ) -> Dict[str, int]:
+        """Atomically record a scan run, deduplicated events, and deduplicated alerts."""
+        now_iso = _utc_now_iso()
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    started_at, source_path, total_lines, valid_events,
+                    malformed_lines, new_events_stored, alerts_generated
+                ) VALUES (?, ?, ?, ?, ?, 0, 0);
+                """,
+                (
+                    now_iso,
+                    parse_result.source_path,
+                    parse_result.total_lines,
+                    parse_result.valid_events,
+                    parse_result.malformed_lines,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            scan_run_id = int(cursor.lastrowid)
+
+            event_rows = [
+                (
+                    scan_run_id,
+                    ev.line_number,
+                    ev.timestamp,
+                    ev.hostname,
+                    ev.service,
+                    ev.pid,
+                    ev.event_type,
+                    ev.username,
+                    ev.source_ip,
+                    ev.port,
+                    ev.auth_method,
+                    ev.target_user,
+                    ev.command,
+                    1 if ev.is_invalid_user else 0,
+                    ev.message,
+                    ev.raw_line,
+                    ev.event_hash,
+                    now_iso,
+                )
+                for ev in parse_result.events
+            ]
+            before_events = conn.total_changes
+            if event_rows:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO auth_events (
+                        scan_run_id, line_number, timestamp, hostname, service,
+                        pid, event_type, username, source_ip, port, auth_method,
+                        target_user, command, is_invalid_user, message, raw_line,
+                        event_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    event_rows,
+                )
+            new_events = conn.total_changes - before_events
+            duplicate_events = len(event_rows) - new_events
+
+            alert_rows = [
+                (
+                    scan_run_id,
+                    alert.rule_id,
+                    alert.rule_name,
+                    alert.severity,
+                    alert.title,
+                    alert.description,
+                    alert.source_ip,
+                    alert.username,
+                    alert.first_seen,
+                    alert.last_seen,
+                    alert.event_count,
+                    json.dumps(list(alert.evidence), separators=(",", ":")),
+                    alert.alert_hash,
+                    now_iso,
+                )
+                for alert in alerts
+            ]
+            before_alerts = conn.total_changes
+            if alert_rows:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO security_alerts (
+                        scan_run_id, rule_id, rule_name, severity, title,
+                        description, source_ip, username, first_seen, last_seen,
+                        event_count, evidence_json, alert_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    alert_rows,
+                )
+            new_alerts = conn.total_changes - before_alerts
+            duplicate_alerts = len(alert_rows) - new_alerts
+
+            conn.execute(
+                """
+                UPDATE scan_runs
+                SET new_events_stored = ?, alerts_generated = ?
+                WHERE id = ?;
+                """,
+                (new_events, new_alerts, scan_run_id),
+            )
+
+        return {
+            "scan_run_id": scan_run_id,
+            "new_events": new_events,
+            "duplicate_events": duplicate_events,
+            "new_alerts": new_alerts,
+            "duplicate_alerts": duplicate_alerts,
+        }
