@@ -2,7 +2,7 @@ from pathlib import Path
 import unittest
 
 from security_analyzer.detector import DetectionEngine
-from security_analyzer.models import SecurityAlert
+from security_analyzer.models import SecurityAlert, Severity
 from security_analyzer.parser import parse_log_file
 
 
@@ -11,7 +11,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestDetectionEngine(unittest.TestCase):
-    """Verify Checkpoint 4.1: DetectionEngine orchestration and SecurityAlert creation."""
+    """Verify Checkpoint 4.1–4.3: DetectionEngine orchestration and severity levels."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -48,6 +48,45 @@ class TestDetectionEngine(unittest.TestCase):
 
         self.assertEqual(hashes_one, hashes_two)
         self.assertEqual(len(set(hashes_one)), len(hashes_one))
+
+    def test_contextual_severity_and_priority_sorting(self) -> None:
+        """Verify alerts are assigned contextual severities and sorted highest first."""
+        engine = DetectionEngine()
+        alerts = engine.evaluate(self.sample_result.events)
+
+        # Highest priority first: critical -> high -> medium
+        ranks = [alert.severity_rank for alert in alerts]
+        self.assertEqual(ranks, sorted(ranks, reverse=True))
+
+        # 5 password failures + accepted password for deploy -> critical
+        self.assertEqual(alerts[0].rule_id, "SSH_SUCCESS_AFTER_FAILURES")
+        self.assertEqual(alerts[0].severity, Severity.CRITICAL.value)
+
+        # Repeated sudo failures attempting /usr/sbin/visudo -> high
+        self.assertEqual(alerts[1].rule_id, "SUDO_REPEATED_FAILURES")
+        self.assertEqual(alerts[1].severity, Severity.HIGH.value)
+
+        # Remaining brute-force and multi-user probes -> medium
+        self.assertTrue(
+            all(alert.severity == Severity.MEDIUM.value for alert in alerts[2:])
+        )
+
+    def test_invalid_severity_raises_value_error(self) -> None:
+        """Verify SecurityAlert rejects unknown severity labels."""
+        with self.assertRaises(ValueError):
+            SecurityAlert(
+                rule_id="TEST",
+                rule_name="Test Rule",
+                severity="urgent",
+                title="Invalid severity test",
+                description="Should fail validation",
+                source_ip=None,
+                username=None,
+                first_seen="2026-11-18T08:00:00+05:30",
+                last_seen="2026-11-18T08:01:00+05:30",
+                event_count=1,
+                alert_hash="a" * 64,
+            )
 
 
 if __name__ == "__main__":
