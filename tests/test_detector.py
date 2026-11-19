@@ -6,8 +6,10 @@ from security_analyzer.detector import (
     detect_invalid_user_events,
     detect_multi_username_probes,
     detect_repeated_ssh_failures,
+    detect_repeated_sudo_failures,
     detect_success_after_failures,
     detect_successful_ssh_logins,
+    detect_sudo_events,
     group_failed_ssh_by_ip,
     group_successful_ssh_by_user,
 )
@@ -269,6 +271,61 @@ class TestSuccessAfterFailuresDetection(unittest.TestCase):
             if (ev := parse_log_line(line, line_number=idx)) is not None
         ]
         findings = detect_success_after_failures(
+            events,
+            min_failures=3,
+            window_seconds=300,
+        )
+        self.assertEqual(findings, [])
+
+
+class TestSudoDetection(unittest.TestCase):
+    """Verify Checkpoint 3.6: sudo command and repeated sudo failure detection."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Parse sample_logs/auth_sample.log once for read-only detector tests."""
+        cls.sample_result = parse_log_file(SAMPLE_LOG, reference_year=2026)
+
+    def test_detect_sudo_events_from_sample_log(self) -> None:
+        """Verify 1 sudo command and 4 sudo auth failure records are detected."""
+        sudo_events = detect_sudo_events(self.sample_result.events)
+        self.assertEqual(len(sudo_events), 5)
+        commands = [ev for ev in sudo_events if ev.event_type == "sudo_command"]
+        failures = [
+            ev for ev in sudo_events if ev.event_type == "sudo_auth_failure"
+        ]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0].username, "developer")
+        self.assertEqual(commands[0].command, "/usr/bin/systemctl status nginx")
+        self.assertEqual(len(failures), 4)
+
+    def test_detect_repeated_sudo_failures_identifies_intern(self) -> None:
+        """Verify user intern is flagged with attempted command /usr/sbin/visudo."""
+        findings = detect_repeated_sudo_failures(
+            self.sample_result.events,
+            min_failures=3,
+            window_seconds=300,
+        )
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding["username"], "intern")
+        self.assertEqual(finding["failure_count"], 4)
+        self.assertEqual(finding["target_users"], ["root"])
+        self.assertEqual(finding["attempted_commands"], ["/usr/sbin/visudo"])
+
+    def test_sudo_failures_outside_window_do_not_trigger(self) -> None:
+        """Verify sudo failures spaced beyond window_seconds do not trigger."""
+        lines = [
+            "2026-11-18T08:00:00+05:30 host sudo: pam_unix(sudo:auth): authentication failure; logname=bob uid=1001 euid=0 tty=/dev/pts/1 ruser=bob rhost=  user=bob",
+            "2026-11-18T08:20:00+05:30 host sudo: pam_unix(sudo:auth): authentication failure; logname=bob uid=1001 euid=0 tty=/dev/pts/1 ruser=bob rhost=  user=bob",
+            "2026-11-18T08:40:00+05:30 host sudo: pam_unix(sudo:auth): authentication failure; logname=bob uid=1001 euid=0 tty=/dev/pts/1 ruser=bob rhost=  user=bob",
+        ]
+        events = [
+            ev
+            for idx, line in enumerate(lines, start=1)
+            if (ev := parse_log_line(line, line_number=idx)) is not None
+        ]
+        findings = detect_repeated_sudo_failures(
             events,
             min_failures=3,
             window_seconds=300,
