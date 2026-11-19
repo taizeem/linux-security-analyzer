@@ -181,11 +181,13 @@ class TestDuplicatePrevention(unittest.TestCase):
 
         self.assertEqual(self.db.count_events(), 25)
         self.assertEqual(self.db.count_alerts(), 5)
-
-    def test_incremental_append_only_ingests_newly_added_lines(self) -> None:
+def test_incremental_append_only_ingests_newly_added_lines(self) -> None:
         """Verify appending 2 new lines to a log ingests only those 2 new events."""
         rolling_log = self.base_path / "rolling_auth.log"
-        rolling_log.write_text(SAMPLE_LOG.read_text(encoding="utf-8"), encoding="utf-8")
+        initial_content = SAMPLE_LOG.read_text(encoding="utf-8")
+        if not initial_content.endswith("\n"):
+            initial_content += "\n"
+        rolling_log.write_text(initial_content, encoding="utf-8")
 
         parsed_1 = parse_log_file(rolling_log, reference_year=2026)
         alerts_1 = DetectionEngine().evaluate(parsed_1.events)
