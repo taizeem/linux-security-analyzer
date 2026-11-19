@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import hashlib
 from typing import Any, Dict, Optional, Tuple
@@ -14,6 +14,20 @@ def compute_event_hash(
     """Compute a deterministic SHA-256 fingerprint for deduplicating events."""
     pid_part = str(pid) if pid is not None else ""
     canonical = f"{timestamp}|{hostname}|{service}|{pid_part}|{message}"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def compute_alert_hash(
+    rule_id: str,
+    source_ip: Optional[str],
+    username: Optional[str],
+    first_seen: str,
+    last_seen: str,
+) -> str:
+    """Compute a deterministic SHA-256 fingerprint for deduplicating alerts."""
+    canonical = (
+        f"{rule_id}|{source_ip or ''}|{username or ''}|{first_seen}|{last_seen}"
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -78,6 +92,41 @@ class AuthEvent:
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the event to a plain dictionary for JSON or SQLite."""
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class SecurityAlert:
+    """Immutable security alert produced by the DetectionEngine."""
+
+    rule_id: str
+    rule_name: str
+    severity: str
+    title: str
+    description: str
+    source_ip: Optional[str]
+    username: Optional[str]
+    first_seen: str
+    last_seen: str
+    event_count: int
+    alert_hash: str
+    evidence: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the alert to a plain dictionary for JSON or SQLite."""
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "severity": self.severity,
+            "title": self.title,
+            "description": self.description,
+            "source_ip": self.source_ip,
+            "username": self.username,
+            "first_seen": self.first_seen,
+            "last_seen": self.last_seen,
+            "event_count": self.event_count,
+            "alert_hash": self.alert_hash,
+            "evidence": list(self.evidence),
+        }
 
 
 @dataclass(frozen=True)
