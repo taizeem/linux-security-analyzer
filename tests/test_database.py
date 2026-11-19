@@ -276,6 +276,59 @@ class TestHistoricalQueries(unittest.TestCase):
         self.assertEqual(stats["top_source_ips"][0]["count"], 9)
         self.assertEqual(len(stats["recent_scan_runs"]), 1)
 
+class TestDatabaseIndexes(unittest.TestCase):
+    """Verify Checkpoint 5.7: SQLite indexes and query planner usage."""
+
+    def setUp(self) -> None:
+        """Create a fresh initialized test database."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "indexed.db"
+        self.db = DatabaseManager(self.db_path)
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        """Clean up temporary database directory."""
+        self.temp_dir.cleanup()
+
+    def test_all_expected_indexes_are_created(self) -> None:
+        """Verify all 8 explicit B-tree indexes exist after initialize()."""
+        indexes = self.db.list_indexes()
+        expected = [
+            "idx_auth_events_service",
+            "idx_auth_events_source_ip",
+            "idx_auth_events_timestamp",
+            "idx_auth_events_type_timestamp",
+            "idx_auth_events_username",
+            "idx_security_alerts_rule_id",
+            "idx_security_alerts_severity_last_seen",
+            "idx_security_alerts_source_ip",
+        ]
+        self.assertEqual(indexes, expected)
+
+    def test_query_planner_uses_indexes_for_ip_and_severity_lookups(self) -> None:
+        """Verify EXPLAIN QUERY PLAN uses our B-tree indexes instead of full scans."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            ip_plan = " ".join(
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM auth_events WHERE source_ip = ?;",
+                    ("203.0.113.50",),
+                ).fetchall()
+            )
+            sev_plan = " ".join(
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM security_alerts WHERE severity = ?;",
+                    ("critical",),
+                ).fetchall()
+            )
+        finally:
+            conn.close()
+
+        self.assertIn("idx_auth_events_source_ip", ip_plan)
+        self.assertIn("idx_security_alerts_severity_last_seen", sev_plan)
+
 
 if __name__ == "__main__":
     unittest.main()

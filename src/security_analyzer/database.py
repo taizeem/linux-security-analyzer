@@ -70,6 +70,25 @@ SCHEMA_TABLES_SQL: Tuple[str, ...] = (
     """,
 )
 
+SCHEMA_INDEXES_SQL: Tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_auth_events_timestamp "
+    "ON auth_events (timestamp DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_auth_events_source_ip "
+    "ON auth_events (source_ip);",
+    "CREATE INDEX IF NOT EXISTS idx_auth_events_username "
+    "ON auth_events (username);",
+    "CREATE INDEX IF NOT EXISTS idx_auth_events_type_timestamp "
+    "ON auth_events (event_type, timestamp DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_auth_events_service "
+    "ON auth_events (service);",
+    "CREATE INDEX IF NOT EXISTS idx_security_alerts_severity_last_seen "
+    "ON security_alerts (severity, last_seen DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_security_alerts_rule_id "
+    "ON security_alerts (rule_id);",
+    "CREATE INDEX IF NOT EXISTS idx_security_alerts_source_ip "
+    "ON security_alerts (source_ip);",
+)
+
 
 def _utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO-8601 format."""
@@ -100,11 +119,23 @@ class DatabaseManager:
             conn.close()
 
     def initialize(self) -> None:
-        """Create all required tables idempotently."""
+        """Create all required tables and indexes idempotently."""
         with self._connect() as conn:
             for statement in SCHEMA_TABLES_SQL:
                 conn.execute(statement)
+            for index_stmt in SCHEMA_INDEXES_SQL:
+                conn.execute(index_stmt)
         logger.debug("Initialized SQLite database at %s", self.db_path)
+
+    def list_indexes(self) -> List[str]:
+        """Return a sorted list of explicit user-defined indexes in the database."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name;"
+            ).fetchall()
+            return [str(row["name"]) for row in rows]
 
     def list_tables(self) -> List[str]:
         """Return a sorted list of user-defined tables in the database."""
