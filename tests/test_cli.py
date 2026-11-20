@@ -64,6 +64,13 @@ class TestCliParserStructure(unittest.TestCase):
     def test_no_subcommand_returns_zero(self) -> None:
         """Verify running with no subcommand prints help and exits 0."""
         self.assertEqual(main([]), 0)
+    def test_global_options_preserved_when_passed_before_subcommand(self) -> None:
+        """Verify --db and --config before a subcommand are not reset to None."""
+        args = self.parser.parse_args(
+            ["--db", "data/pre.db", "--config", "config.example.json", "events"]
+        )
+        self.assertEqual(args.db, "data/pre.db")
+        self.assertEqual(args.config, "config.example.json")
 
 class TestAnalyzeCommand(unittest.TestCase):
    

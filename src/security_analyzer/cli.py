@@ -107,12 +107,13 @@ def _validate_year(year: Optional[int]) -> Optional[int]:
 
 def _resolve_config_and_db(args: argparse.Namespace) -> tuple[AppConfig, DatabaseManager]:
     """Load AppConfig and initialize DatabaseManager with optional CLI overrides."""
-    app_config = load_config(args.config)
-    db_path = args.db if args.db else app_config.db_path
+    config_path = getattr(args, "config", None)
+    db_override = getattr(args, "db", None)
+    app_config = load_config(config_path)
+    db_path = db_override if db_override else app_config.db_path
     db = DatabaseManager(db_path)
     db.initialize()
     return app_config, db
-
 
 def _handle_analyze(args: argparse.Namespace) -> int:
     """Ingest a log file, run detection rules, persist results, and print summary."""
@@ -380,22 +381,21 @@ def _build_common_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-c",
         "--config",
-        default=None,
+        default=argparse.SUPPRESS,
         help="Path to JSON configuration file (defaults to built-in settings).",
     )
     common.add_argument(
         "--db",
-        default=None,
+        default=argparse.SUPPRESS,
         help="Override SQLite database path.",
     )
     common.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default=None,
+        default=argparse.SUPPRESS,
         help="Override application logging verbosity.",
     )
     return common
-
 
 def build_parser() -> argparse.ArgumentParser:
     """Create and configure the top-level argument parser and all subcommands."""
@@ -548,9 +548,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.log_level:
+    log_level = getattr(args, "log_level", None)
+    if log_level:
         logging.getLogger("security_analyzer").setLevel(
-            getattr(logging, args.log_level)
+            getattr(logging, log_level)
         )
 
     handler = getattr(args, "handler", None)
@@ -567,7 +568,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.exception("Unexpected error while executing '%s'", args.command)
         print(f"Fatal error: {exc}", file=sys.stderr)
         return 2
-
 
 if __name__ == "__main__":
     sys.exit(main())
