@@ -1,3 +1,4 @@
+import time
 import json
 import os
 import fcntl
@@ -201,6 +202,48 @@ class TestScheduledScanScript(unittest.TestCase):
             self.assertIn("already running", result.stderr.lower())
             self.assertIn("WARNING", run_log.read_text(encoding="utf-8"))
             self.assertEqual(list(report_dir.glob("*")), [])
+
+    def test_scheduled_scan_prunes_only_expired_security_reports(self) -> None:
+        """Verify report retention deletes expired security_report_* files only."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            report_dir = tmp_path / "reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            run_log = tmp_path / "scheduled_scan.log"
+
+            old_report = report_dir / "security_report_20200101_000000Z.json"
+            old_report.write_text("{}", encoding="utf-8")
+            unrelated_old_file = report_dir / "analyst_notes.txt"
+            unrelated_old_file.write_text("keep me", encoding="utf-8")
+
+            # Backdate both files by 45 days
+            forty_five_days_ago = time.time() - (45 * 86400)
+            os.utime(old_report, (forty_five_days_ago, forty_five_days_ago))
+            os.utime(unrelated_old_file, (forty_five_days_ago, forty_five_days_ago))
+
+            env = os.environ.copy()
+            env["LSA_LOG_FILE"] = str(SAMPLE_LOG)
+            env["LSA_DB_PATH"] = str(tmp_path / "retention.db")
+            env["LSA_REPORT_DIR"] = str(report_dir)
+            env["LSA_RUN_LOG"] = str(run_log)
+            env["LSA_LOCK_FILE"] = str(tmp_path / "retention.lock")
+            env["LSA_RETENTION_DAYS"] = "30"
+
+            result = subprocess.run(
+                [str(SCHEDULED_SCAN_SCRIPT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertFalse(old_report.exists(), "Expired report should be pruned")
+            self.assertTrue(
+                unrelated_old_file.exists(),
+                "Unrelated files in reports/ must never be deleted",
+            )
+            self.assertEqual(len(list(report_dir.glob("security_report_*.json"))), 1)
+            self.assertEqual(len(list(report_dir.glob("security_report_*.txt"))), 1)
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,8 @@ RUN_LOG="${LSA_RUN_LOG:-${PROJECT_ROOT}/data/scheduled_scan.log}"
 LOCK_FILE="${LSA_LOCK_FILE:-${PROJECT_ROOT}/data/scheduled_scan.lock}"
 CONFIG_PATH="${LSA_CONFIG_PATH:-}"
 
+RETENTION_DAYS="${LSA_RETENTION_DAYS:-30}"
+
 mkdir -p "$(dirname "${DB_PATH}")" "${REPORT_DIR}" "$(dirname "${RUN_LOG}")" "$(dirname "${LOCK_FILE}")"
 
 log_msg() {
@@ -102,6 +104,40 @@ if ! "${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" report --format terminal --output "${T
     echo "Error: terminal report export failed (see ${RUN_LOG})" >&2
     exit "${E_REPORT_FAILED}"
 fi
+
+prune_old_reports() {
+    if [[ ! "${RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+        log_msg "WARNING" "Invalid retention_days='${RETENTION_DAYS}'; skipping report cleanup."
+        return 0
+    fi
+
+    if [[ -z "${REPORT_DIR}" || "${REPORT_DIR}" == "/" || ! -d "${REPORT_DIR}" ]]; then
+        log_msg "WARNING" "Refusing to prune unsafe report directory: '${REPORT_DIR}'"
+        return 0
+    fi
+
+    local deleted_count=0
+    while IFS= read -r expired_file; do
+        if [[ -n "${expired_file}" ]]; then
+            deleted_count=$((deleted_count + 1))
+            log_msg "INFO" "Pruned expired report: ${expired_file}"
+        fi
+    done < <(
+        find "${REPORT_DIR}" -maxdepth 1 -type f \
+            \( -name 'security_report_*.json' -o -name 'security_report_*.txt' \) \
+            -mtime "+${RETENTION_DAYS}" -print -delete
+    )
+
+    if [[ "${deleted_count}" -gt 0 ]]; then
+        log_msg "INFO" "Report retention removed ${deleted_count} file(s) older than ${RETENTION_DAYS} day(s)."
+    fi
+}
+
+# 3. Safely prune expired generated reports older than RETENTION_DAYS
+prune_old_reports
+
+log_msg "INFO" "Scheduled scan completed successfully. Reports: ${JSON_REPORT}, ${TXT_REPORT}"
+exit 0
 
 log_msg "INFO" "Scheduled scan completed successfully. Reports: ${JSON_REPORT}, ${TXT_REPORT}"
 exit 0
