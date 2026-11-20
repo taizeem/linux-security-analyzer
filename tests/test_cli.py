@@ -284,6 +284,52 @@ class TestAlertsCommand(unittest.TestCase):
         self.assertEqual(code_2, 0)
         self.assertIn("No matching security alerts found.", empty_buf.getvalue())
 
+class TestStatsCommand(unittest.TestCase):
+    """Verify stats CLI command terminal dashboard and JSON output."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "stats_cli.db"
+        with redirect_stdout(io.StringIO()):
+            main(
+                [
+                    "analyze",
+                    "--file",
+                    str(SAMPLE_LOG),
+                    "--db",
+                    str(self.db_path),
+                    "--year",
+                    "2026",
+                ]
+            )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_stats_terminal_output_displays_counts_and_top_entities(self) -> None:
+        """Verify stats renders totals, severity counts, top IPs, and scan runs."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["stats", "--db", str(self.db_path), "--top", "3"])
+        self.assertEqual(code, 0)
+        output = buf.getvalue()
+        self.assertIn("Total stored events:       25", output)
+        self.assertIn("Successful SSH logins:     3", output)
+        self.assertIn("Failed SSH logins:         11", output)
+        self.assertIn("CRITICAL: 1 | HIGH: 1 | MEDIUM: 3 | LOW: 0", output)
+        self.assertIn("203.0.113.50", output)
+
+    def test_stats_json_output_matches_database_aggregates(self) -> None:
+        """Verify stats --json outputs machine-readable aggregate counts."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["stats", "--db", str(self.db_path), "--top", "2", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["total_events"], 25)
+        self.assertEqual(data["total_alerts"], 5)
+        self.assertEqual(len(data["top_source_ips"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

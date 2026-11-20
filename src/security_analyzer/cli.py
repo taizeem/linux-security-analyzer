@@ -178,8 +178,55 @@ def _handle_alerts(args: argparse.Namespace) -> int:
 
 
 def _handle_stats(args: argparse.Namespace) -> int:
-    """Placeholder handler for 'stats' (implemented in Checkpoint 6.5)."""
-    print(f"stats command registered (top={args.top})")
+    """Display aggregated authentication and alert statistics from SQLite."""
+    _, db = _resolve_config_and_db(args)
+    stats = db.get_statistics(top_n=args.top)
+
+    if args.as_json:
+        print(json.dumps(stats, indent=2))
+        return 0
+
+    print("Authentication Security Statistics")
+    print("=" * 42)
+    print(f"Total stored events:       {stats['total_events']}")
+    print(f"Successful SSH logins:     {stats['total_successful_logins']}")
+    print(f"Failed SSH logins:         {stats['total_failed_logins']}")
+    print(f"Invalid username probes:   {stats['total_invalid_users']}")
+    print(f"Sudo activity events:      {stats['total_sudo_events']}")
+    print(f"Total generated alerts:    {stats['total_alerts']}")
+
+    sev = stats["alerts_by_severity"]
+    print("\nAlerts by Severity:")
+    print(
+        f"  CRITICAL: {sev['critical']} | HIGH: {sev['high']} | "
+        f"MEDIUM: {sev['medium']} | LOW: {sev['low']}"
+    )
+
+    print(f"\nTop Source IP Addresses (limit {args.top}):")
+    if stats["top_source_ips"]:
+        for entry in stats["top_source_ips"]:
+            print(f"  {entry['source_ip']:<30} {entry['count']} event(s)")
+    else:
+        print("  None recorded")
+
+    print(f"\nMost Targeted Usernames (limit {args.top}):")
+    if stats["top_targeted_usernames"]:
+        for entry in stats["top_targeted_usernames"]:
+            print(f"  {entry['username']:<20} {entry['count']} failed/invalid event(s)")
+    else:
+        print("  None recorded")
+
+    print("\nRecent Scan Runs:")
+    if stats["recent_scan_runs"]:
+        for run in stats["recent_scan_runs"]:
+            print(
+                f"  Run #{run['id']} | {run['started_at']} | "
+                f"new_events={run['new_events_stored']} "
+                f"new_alerts={run['alerts_generated']} | {run['source_path']}"
+            )
+    else:
+        print("  No scans recorded yet")
+
     return 0
 
 
