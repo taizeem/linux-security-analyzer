@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
 from security_analyzer import __app_name__, __version__
 from security_analyzer.database import DatabaseManager
+
+REPORT_SCHEMA_VERSION = "1.0"
 
 
 def build_report_data(
@@ -17,6 +20,7 @@ def build_report_data(
 
     return {
         "metadata": {
+            "schema_version": REPORT_SCHEMA_VERSION,
             "app_name": __app_name__,
             "app_version": __version__,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -140,6 +144,12 @@ def render_terminal_report(
     lines.append("=" * 72)
     return "\n".join(lines)
 
+def render_json_report(
+    report_data: Dict[str, Any],
+    indent: int = 2,
+) -> str:
+    """Serialize a canonical report payload into formatted JSON text."""
+    return json.dumps(report_data, indent=indent, ensure_ascii=False)
 
 def write_report_file(content: str, output_path: Union[str, Path]) -> Path:
     """Write rendered report content to disk, creating parent directories if needed."""

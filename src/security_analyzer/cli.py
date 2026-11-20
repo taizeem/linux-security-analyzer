@@ -14,6 +14,7 @@ from security_analyzer.models import VALID_SEVERITIES
 from security_analyzer.parser import parse_log_file, validate_ip_address
 from security_analyzer.reporter import (
     build_report_data,
+    render_json_report,
     render_terminal_report,
     write_report_file,
 )
@@ -338,7 +339,7 @@ def _handle_report(args: argparse.Namespace) -> int:
     report_data = build_report_data(db, top_n=top_n)
 
     if args.format == "json":
-        rendered = json.dumps(report_data, indent=2)
+        rendered = render_json_report(report_data)
     else:
         rendered = render_terminal_report(report_data)
 
