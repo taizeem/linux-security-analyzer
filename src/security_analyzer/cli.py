@@ -84,15 +84,96 @@ def _handle_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def _truncate(text: Optional[str], max_len: int) -> str:
+    """Truncate long terminal fields cleanly with an ellipsis."""
+    if not text:
+        return "-"
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
 def _handle_events(args: argparse.Namespace) -> int:
-    """Placeholder handler for 'events' (implemented in Checkpoint 6.3)."""
-    print(f"events command registered (limit={args.limit})")
+    """Query and display stored authentication events."""
+    _, db = _resolve_config_and_db(args)
+    events = db.query_events(
+        event_type=args.event_type,
+        username=args.username,
+        source_ip=args.source_ip,
+        service=args.service,
+        since=args.since,
+        until=args.until,
+        limit=args.limit,
+    )
+
+    if args.as_json:
+        print(json.dumps(events, indent=2))
+        return 0
+
+    if not events:
+        print("No matching authentication events found.")
+        return 0
+
+    header = (
+        f"{'TIMESTAMP':<26} {'SERVICE':<8} {'EVENT TYPE':<22} "
+        f"{'USER':<12} {'SOURCE IP':<26} {'MESSAGE'}"
+    )
+    print(header)
+    print("-" * 110)
+    for ev in events:
+        ts = _truncate(str(ev["timestamp"])[:25], 25)
+        svc = _truncate(ev["service"], 8)
+        ev_type = _truncate(ev["event_type"], 22)
+        user = _truncate(ev["username"], 12)
+        ip_addr = _truncate(ev["source_ip"], 26)
+        msg = _truncate(ev["message"], 55)
+        print(f"{ts:<26} {svc:<8} {ev_type:<22} {user:<12} {ip_addr:<26} {msg}")
+
+    print(f"\nShowing {len(events)} event(s).")
     return 0
 
 
 def _handle_alerts(args: argparse.Namespace) -> int:
-    """Placeholder handler for 'alerts' (implemented in Checkpoint 6.4)."""
-    print(f"alerts command registered (limit={args.limit})")
+    """Query and display stored security alerts with optional evidence drill-down."""
+    _, db = _resolve_config_and_db(args)
+    alerts = db.query_alerts(
+        severity=args.severity,
+        rule_id=args.rule_id,
+        source_ip=args.source_ip,
+        username=args.username,
+        limit=args.limit,
+    )
+
+    if args.as_json:
+        print(json.dumps(alerts, indent=2))
+        return 0
+
+    if not alerts:
+        print("No matching security alerts found.")
+        return 0
+
+    for idx, alert in enumerate(alerts, start=1):
+        target = alert["source_ip"] or alert["username"] or "host"
+        print(
+            f"{idx}. [{alert['severity'].upper():<8}] {alert['rule_id']} | "
+            f"{alert['title']}"
+        )
+        print(
+            f"   Target: {target} | Events: {alert['event_count']} | "
+            f"Window: {alert['first_seen']} -> {alert['last_seen']}"
+        )
+        print(f"   Summary: {alert['description']}")
+
+        if args.show_evidence and alert.get("evidence"):
+            print("   Evidence:")
+            for item in alert["evidence"]:
+                print(
+                    f"     - line {item['line_number']} | "
+                    f"{item['timestamp']} | {item['message']}"
+                )
+        print()
+
+    print(f"Showing {len(alerts)} alert(s).")
     return 0
 
 
