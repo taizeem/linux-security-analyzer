@@ -69,6 +69,44 @@ class TestBashLauncher(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unrecognized arguments", result.stderr.lower())
 
+    def test_launcher_works_when_invoked_via_symlink(self) -> None:
+        """Verify symlinked scripts/run.sh still resolves PROJECT_ROOT cleanly."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            symlink_path = Path(tmp_dir) / "security-analyzer"
+            symlink_path.symlink_to(RUN_SCRIPT)
+
+            result = subprocess.run(
+                [str(symlink_path), "--version"],
+                cwd=tmp_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn(__version__, result.stdout)
+
+    def test_launcher_runs_analyze_subcommand_end_to_end(self) -> None:
+        """Verify scripts/run.sh executes analyze against sample_logs cleanly."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "launcher_e2e.db"
+            result = subprocess.run(
+                [
+                    str(RUN_SCRIPT),
+                    "analyze",
+                    "--file",
+                    "sample_logs/auth_sample.log",
+                    "--db",
+                    str(db_path),
+                    "--year",
+                    "2026",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("Scan Run #1 completed", result.stdout)
+            self.assertTrue(db_path.is_file())
 
 if __name__ == "__main__":
     unittest.main()
