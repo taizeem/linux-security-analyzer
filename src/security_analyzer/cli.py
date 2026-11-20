@@ -12,6 +12,11 @@ from security_analyzer.detector import DetectionEngine
 from security_analyzer.logger import get_logger
 from security_analyzer.models import VALID_SEVERITIES
 from security_analyzer.parser import parse_log_file, validate_ip_address
+from security_analyzer.reporter import (
+    build_report_data,
+    render_terminal_report,
+    write_report_file,
+)
 
 logger = get_logger(__name__)
 
@@ -327,8 +332,22 @@ def _handle_stats(args: argparse.Namespace) -> int:
 
 
 def _handle_report(args: argparse.Namespace) -> int:
-    
-    print(f"report command registered (format={args.format})")
+    """Generate a terminal or JSON security report from stored SQLite data."""
+    top_n = _validate_positive_int(args.top, "--top", max_value=500)
+    _, db = _resolve_config_and_db(args)
+    report_data = build_report_data(db, top_n=top_n)
+
+    if args.format == "json":
+        rendered = json.dumps(report_data, indent=2)
+    else:
+        rendered = render_terminal_report(report_data)
+
+    if args.output:
+        saved_path = write_report_file(rendered, args.output)
+        print(f"Report written to {saved_path}")
+    else:
+        print(rendered)
+
     return 0
 
 
