@@ -239,6 +239,33 @@ class TestHistoricalReporting(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("cannot combine --days with --since", err_buf.getvalue().lower())
 
-        
+class TestReportReadability(unittest.TestCase):
+    """Verify posture banner, ASCII bar indicators, and evidence limit controls."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.db = DatabaseManager(self.base_path / "readability.db")
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_posture_banner_clear_vs_action_required(self) -> None:
+        """Verify empty DB shows CLEAR and critical alerts show ACTION REQUIRED."""
+        empty_report = render_terminal_report(build_report_data(self.db))
+        self.assertIn("Status:       CLEAR", empty_report)
+
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        alerts = DetectionEngine().evaluate(parsed.events)
+        self.db.persist_scan_results(parsed, alerts)
+
+        populated = render_terminal_report(
+            build_report_data(self.db), max_evidence_per_alert=2
+        )
+        self.assertIn("Status:       ACTION REQUIRED", populated)
+        self.assertIn("################", populated)
+        self.assertIn("additional evidence line(s) omitted", populated)
+
 if __name__ == "__main__":
     unittest.main()

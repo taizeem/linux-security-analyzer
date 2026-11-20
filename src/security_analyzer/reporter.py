@@ -1,12 +1,36 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Union, Optional
+import textwrap
+from typing import Any, Dict, List, Optional, Union
 
 from security_analyzer import __app_name__, __version__
 from security_analyzer.database import DatabaseManager
 
 REPORT_SCHEMA_VERSION = "1.0"
+REPORT_WIDTH = 76
+
+
+def _derive_posture_status(alerts_by_severity: Dict[str, int]) -> str:
+    """Return a concise executive posture banner from severity counts."""
+    if alerts_by_severity.get("critical", 0) > 0:
+        return "ACTION REQUIRED — Critical alert(s) detected"
+    if alerts_by_severity.get("high", 0) > 0:
+        return "ELEVATED — High-severity alert(s) detected"
+    if (
+        alerts_by_severity.get("medium", 0) > 0
+        or alerts_by_severity.get("low", 0) > 0
+    ):
+        return "MONITOR — Medium/low-severity alert(s) detected"
+    return "CLEAR — No security alerts detected"
+
+
+def _format_bar(count: int, max_count: int, width: int = 16) -> str:
+    """Render a proportional ASCII bar for terminal tables."""
+    if max_count <= 0 or count <= 0:
+        return ""
+    filled = max(1, round((count / max_count) * width))
+    return "#" * filled
 
 
 def build_report_data(
@@ -33,6 +57,7 @@ def build_report_data(
             },
         },
         "summary": {
+            "posture_status": _derive_posture_status(stats["alerts_by_severity"]),
             "total_events": stats["total_events"],
             "total_successful_logins": stats["total_successful_logins"],
             "total_failed_logins": stats["total_failed_logins"],
@@ -52,19 +77,22 @@ def build_report_data(
         "scan_runs": stats["recent_scan_runs"],
     }
 
+
 def render_terminal_report(
     report_data: Dict[str, Any],
     max_evidence_per_alert: int = 5,
 ) -> str:
-    """Render a structured, human-readable terminal security report."""
+    """Render a structured, wrapped, human-readable terminal security report."""
     meta = report_data["metadata"]
     summary = report_data["summary"]
     sev = summary["alerts_by_severity"]
+    posture = summary.get("posture_status") or _derive_posture_status(sev)
     lines: List[str] = []
 
-    lines.append("=" * 72)
+    lines.append("=" * REPORT_WIDTH)
     lines.append("LINUX SECURITY LOG ANALYZER — SECURITY REPORT")
-    lines.append("=" * 72)
+    lines.append("=" * REPORT_WIDTH)
+    lines.append(f"Status:       {posture}")
     lines.append(f"Generated At: {meta['generated_at']}")
     lines.append(f"Tool Version: {meta['app_name']} {meta['app_version']}")
     lines.append(f"Database:     {meta['database_path']}")
@@ -75,7 +103,7 @@ def render_terminal_report(
     lines.append("")
 
     lines.append("1. AUTHENTICATION SUMMARY")
-    lines.append("-" * 72)
+    lines.append("-" * REPORT_WIDTH)
     lines.append(f"  Total Events Analyzed:     {summary['total_events']}")
     lines.append(f"  Total Successful Logins:   {summary['total_successful_logins']}")
     lines.append(f"  Total Failed Logins:       {summary['total_failed_logins']}")
@@ -102,27 +130,35 @@ def render_terminal_report(
     lines.append("")
 
     lines.append("2. FREQUENTLY OBSERVED SOURCE IP ADDRESSES")
-    lines.append("-" * 72)
-    if report_data["top_source_ips"]:
-        for item in report_data["top_source_ips"]:
-            lines.append(f"  {item['source_ip']:<36} {item['count']:>6} event(s)")
+    lines.append("-" * REPORT_WIDTH)
+    top_ips = report_data["top_source_ips"]
+    if top_ips:
+        max_ip_count = max(item["count"] for item in top_ips)
+        for item in top_ips:
+            bar = _format_bar(item["count"], max_ip_count)
+            lines.append(
+                f"  {item['source_ip']:<32} {item['count']:>5} event(s)  {bar}"
+            )
     else:
         lines.append("  No source IP activity recorded.")
     lines.append("")
 
     lines.append("3. MOST TARGETED USERNAMES")
-    lines.append("-" * 72)
-    if report_data["top_targeted_usernames"]:
-        for item in report_data["top_targeted_usernames"]:
+    lines.append("-" * REPORT_WIDTH)
+    top_users = report_data["top_targeted_usernames"]
+    if top_users:
+        max_user_count = max(item["count"] for item in top_users)
+        for item in top_users:
+            bar = _format_bar(item["count"], max_user_count)
             lines.append(
-                f"  {item['username']:<24} {item['count']:>6} failed/invalid event(s)"
+                f"  {item['username']:<22} {item['count']:>5} attempt(s)  {bar}"
             )
     else:
         lines.append("  No failed or invalid username activity recorded.")
     lines.append("")
 
     lines.append("4. DETECTED ALERTS & EVIDENCE")
-    lines.append("-" * 72)
+    lines.append("-" * REPORT_WIDTH)
     alerts = report_data["alerts"]
     if not alerts:
         lines.append("  No security alerts generated.")
@@ -130,16 +166,23 @@ def render_terminal_report(
         for idx, alert in enumerate(alerts, start=1):
             target = alert["source_ip"] or alert["username"] or "host"
             lines.append(
-                f"  [{idx}] [{alert['severity'].upper():<8}] {alert['rule_id']} — {alert['title']}"
+                f"  [{idx}] [{alert['severity'].upper():<8}] "
+                f"{alert['rule_id']} — {alert['title']}"
             )
             lines.append(
                 f"      Target: {target} | Events: {alert['event_count']} | "
                 f"Window: {alert['first_seen']} -> {alert['last_seen']}"
             )
-            lines.append(f"      Details: {alert['description']}")
+            wrapped_desc = textwrap.fill(
+                alert["description"],
+                width=REPORT_WIDTH,
+                initial_indent="      Details: ",
+                subsequent_indent="               ",
+            )
+            lines.append(wrapped_desc)
 
             evidence = alert.get("evidence", [])
-            if evidence:
+            if evidence and max_evidence_per_alert > 0:
                 lines.append("      Evidence:")
                 shown = evidence[:max_evidence_per_alert]
                 for ev in shown:
@@ -149,11 +192,13 @@ def render_terminal_report(
                     )
                 remaining = len(evidence) - len(shown)
                 if remaining > 0:
-                    lines.append(f"        ... ({remaining} additional evidence line(s) omitted)")
+                    lines.append(
+                        f"        ... ({remaining} additional evidence line(s) omitted)"
+                    )
             lines.append("")
 
     lines.append("5. SCAN EXECUTION HISTORY")
-    lines.append("-" * 72)
+    lines.append("-" * REPORT_WIDTH)
     if report_data["scan_runs"]:
         for run in report_data["scan_runs"]:
             lines.append(
@@ -167,8 +212,9 @@ def render_terminal_report(
     else:
         lines.append("  No scan runs recorded.")
 
-    lines.append("=" * 72)
+    lines.append("=" * REPORT_WIDTH)
     return "\n".join(lines)
+
 
 def render_json_report(
     report_data: Dict[str, Any],
@@ -176,6 +222,7 @@ def render_json_report(
 ) -> str:
     """Serialize a canonical report payload into formatted JSON text."""
     return json.dumps(report_data, indent=indent, ensure_ascii=False)
+
 
 def write_report_file(content: str, output_path: Union[str, Path]) -> Path:
     """Write rendered report content to disk, creating parent directories if needed."""

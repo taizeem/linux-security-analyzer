@@ -335,12 +335,14 @@ def _handle_stats(args: argparse.Namespace) -> int:
 def _handle_report(args: argparse.Namespace) -> int:
     """Generate a terminal or JSON security report from stored SQLite data."""
     top_n = _validate_positive_int(args.top, "--top", max_value=500)
+    max_evidence = _validate_positive_int(
+            args.max_evidence, "--max-evidence", max_value=100
+        )
     if args.days is not None and args.since is not None:
         raise ValueError("Cannot combine --days with --since; choose one.")
 
     since = _validate_iso_bound(args.since, "--since")
     until = _validate_iso_bound(args.until, "--until")
-
     if args.days is not None:
         days = _validate_positive_int(args.days, "--days", max_value=3650)
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -350,6 +352,13 @@ def _handle_report(args: argparse.Namespace) -> int:
 
     _, db = _resolve_config_and_db(args)
     report_data = build_report_data(db, top_n=top_n, since=since, until=until)
+
+    if args.format == "json":
+            rendered = render_json_report(report_data)
+    else:
+        rendered = render_terminal_report(
+            report_data, max_evidence_per_alert=max_evidence
+            )
 
     if args.format == "json":
         rendered = render_json_report(report_data)
@@ -521,6 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Shortcut to report over the last N days (cannot combine with --since).",
+    )
+    report_parser.add_argument(
+        "--max-evidence",
+        type=int,
+        default=5,
+        help="Maximum evidence lines to display per alert in terminal mode (default: 5).",
     )
     report_parser.add_argument("--top", type=int, default=10, help="Number of top IPs/users to include.")
     report_parser.set_defaults(handler=_handle_report)
