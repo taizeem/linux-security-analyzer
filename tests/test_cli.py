@@ -1,10 +1,18 @@
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 from security_analyzer.cli import build_parser, main
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
+
+
 class TestCliParserStructure(unittest.TestCase):
-    """Verify Checkpoint 6.1: subcommand registration and argument parsing."""
 
     def setUp(self) -> None:
         self.parser = build_parser()
@@ -56,6 +64,74 @@ class TestCliParserStructure(unittest.TestCase):
     def test_no_subcommand_returns_zero(self) -> None:
         """Verify running with no subcommand prints help and exits 0."""
         self.assertEqual(main([]), 0)
+
+class TestAnalyzeCommand(unittest.TestCase):
+   
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "cli_test.db"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_analyze_command_json_and_idempotent_rerun(self) -> None:
+        """Verify analyze ingests events/alerts on run 1 and deduplicates on run 2."""
+        stdout_1 = io.StringIO()
+        with redirect_stdout(stdout_1):
+            code_1 = main(
+                [
+                    "analyze",
+                    "--file",
+                    str(SAMPLE_LOG),
+                    "--db",
+                    str(self.db_path),
+                    "--year",
+                    "2026",
+                    "--json",
+                ]
+            )
+        self.assertEqual(code_1, 0)
+        payload_1 = json.loads(stdout_1.getvalue())
+        self.assertEqual(payload_1["new_events_stored"], 25)
+        self.assertEqual(payload_1["new_alerts_stored"], 5)
+        self.assertEqual(payload_1["malformed_lines"], 1)
+
+        stdout_2 = io.StringIO()
+        with redirect_stdout(stdout_2):
+            code_2 = main(
+                [
+                    "analyze",
+                    "--file",
+                    str(SAMPLE_LOG),
+                    "--db",
+                    str(self.db_path),
+                    "--year",
+                    "2026",
+                    "--json",
+                ]
+            )
+        self.assertEqual(code_2, 0)
+        payload_2 = json.loads(stdout_2.getvalue())
+        self.assertEqual(payload_2["new_events_stored"], 0)
+        self.assertEqual(payload_2["duplicate_events_skipped"], 25)
+        self.assertEqual(payload_2["new_alerts_stored"], 0)
+        self.assertEqual(payload_2["duplicate_alerts_skipped"], 5)
+
+    def test_analyze_missing_file_returns_exit_code_one(self) -> None:
+        """Verify missing log file prints an error to stderr and exits 1."""
+        stderr_buf = io.StringIO()
+        with redirect_stderr(stderr_buf):
+            code = main(
+                [
+                    "analyze",
+                    "--file",
+                    str(Path(self.temp_dir.name) / "does_not_exist.log"),
+                    "--db",
+                    str(self.db_path),
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("not found", stderr_buf.getvalue().lower())
 
 
 if __name__ == "__main__":

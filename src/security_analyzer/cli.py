@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import sys
 from typing import Optional, Sequence
@@ -6,7 +7,9 @@ from typing import Optional, Sequence
 from security_analyzer import __app_name__, __version__
 from security_analyzer.config import AppConfig, load_config
 from security_analyzer.database import DatabaseManager
+from security_analyzer.detector import DetectionEngine
 from security_analyzer.logger import get_logger
+from security_analyzer.parser import parse_log_file
 
 
 logger = get_logger(__name__)
@@ -22,8 +25,62 @@ def _resolve_config_and_db(args: argparse.Namespace) -> tuple[AppConfig, Databas
 
 
 def _handle_analyze(args: argparse.Namespace) -> int:
-    """Placeholder handler for 'analyze' (implemented in Checkpoint 6.2)."""
-    print(f"analyze command registered (file={args.file})")
+    """Ingest a log file, run detection rules, persist results, and print summary."""
+    app_config, db = _resolve_config_and_db(args)
+    target_file = args.file if args.file else app_config.default_log_path
+
+    parse_result = parse_log_file(target_file, reference_year=args.year)
+    engine = DetectionEngine.from_config(app_config)
+    alerts = engine.evaluate(parse_result.events)
+    persistence = db.persist_scan_results(parse_result, alerts)
+
+    summary = {
+        "scan_run_id": persistence["scan_run_id"],
+        "source_path": parse_result.source_path,
+        "db_path": str(db.db_path),
+        "total_lines": parse_result.total_lines,
+        "valid_events": parse_result.valid_events,
+        "malformed_lines": parse_result.malformed_lines,
+        "new_events_stored": persistence["new_events"],
+        "duplicate_events_skipped": persistence["duplicate_events"],
+        "alerts_detected": len(alerts),
+        "new_alerts_stored": persistence["new_alerts"],
+        "duplicate_alerts_skipped": persistence["duplicate_alerts"],
+        "alerts": [alert.to_dict() for alert in alerts],
+    }
+
+    if args.as_json:
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    print(f"Scan Run #{summary['scan_run_id']} completed")
+    print(f"  Source file:      {summary['source_path']}")
+    print(f"  Database:         {summary['db_path']}")
+    print(
+        f"  Lines parsed:     {summary['total_lines']} "
+        f"(valid: {summary['valid_events']}, malformed: {summary['malformed_lines']})"
+    )
+    print(
+        f"  Events stored:    {summary['new_events_stored']} new, "
+        f"{summary['duplicate_events_skipped']} duplicates skipped"
+    )
+    print(
+        f"  Alerts detected:  {summary['alerts_detected']} "
+        f"({summary['new_alerts_stored']} new, "
+        f"{summary['duplicate_alerts_skipped']} duplicates skipped)"
+    )
+
+    if alerts:
+        print("\nDetected Alerts:")
+        for alert in alerts:
+            target = alert.source_ip or alert.username or "host"
+            print(
+                f"  [{alert.severity.upper():<8}] {alert.rule_id} | "
+                f"{target} | {alert.title}"
+            )
+    else:
+        print("\nDetected Alerts: None")
+
     return 0
 
 
@@ -46,7 +103,7 @@ def _handle_stats(args: argparse.Namespace) -> int:
 
 
 def _handle_report(args: argparse.Namespace) -> int:
-    """Placeholder handler for 'report' (implemented in Phase 7)."""
+    
     print(f"report command registered (format={args.format})")
     return 0
 
