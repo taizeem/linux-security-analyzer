@@ -329,6 +329,46 @@ class TestDatabaseIndexes(unittest.TestCase):
         self.assertIn("idx_auth_events_source_ip", ip_plan)
         self.assertIn("idx_security_alerts_severity_last_seen", sev_plan)
 
+class TestDatabaseErrorHandling(unittest.TestCase):
+    """Verify database corruption handling, FK constraints, and query bound guards."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_corrupted_database_file_raises_database_error(self) -> None:
+        """Verify opening a non-SQLite file raises sqlite3.DatabaseError."""
+        corrupted = self.base_path / "corrupted.db"
+        corrupted.write_text("this is not a valid sqlite3 file", encoding="utf-8")
+
+        db = DatabaseManager(corrupted)
+        with self.assertRaises(sqlite3.DatabaseError):
+            db.initialize()
+
+    def test_foreign_key_constraint_rejects_nonexistent_scan_run_id(self) -> None:
+        """Verify PRAGMA foreign_keys = ON rejects orphaned scan_run_id values."""
+        db = DatabaseManager(self.base_path / "fk_test.db")
+        db.initialize()
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.store_events(parsed.events[:1], scan_run_id=99999)
+
+    def test_invalid_query_limits_raise_value_error(self) -> None:
+        """Verify non-positive limit/top_n arguments fail fast with ValueError."""
+        db = DatabaseManager(self.base_path / "bounds.db")
+        db.initialize()
+
+        with self.assertRaises(ValueError):
+            db.query_events(limit=0)
+        with self.assertRaises(ValueError):
+            db.query_alerts(limit=-1)
+        with self.assertRaises(ValueError):
+            db.get_statistics(top_n=0)
+
 
 if __name__ == "__main__":
     unittest.main()

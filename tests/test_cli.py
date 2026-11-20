@@ -1,3 +1,4 @@
+import os
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
@@ -410,6 +411,61 @@ class TestCliInputValidation(unittest.TestCase):
             with redirect_stderr(err_buf):
                 code = main(argv)
             self.assertEqual(code, 1, msg=f"Expected exit code 1 for {argv}")
+
+class TestCliErrorPaths(unittest.TestCase):
+    """Verify OS-level error paths exit cleanly with code 1 and stderr diagnostics."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.db_path = self.base_path / "err_cli.db"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_analyze_directory_path_returns_exit_code_one(self) -> None:
+        """Verify passing a directory to --file exits 1 with a clear message."""
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(
+                ["analyze", "--file", str(self.base_path), "--db", str(self.db_path)]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("directory", err_buf.getvalue().lower())
+
+    @unittest.skipIf(os.geteuid() == 0, "Root bypasses 0000 file permission checks")
+    def test_analyze_unreadable_file_returns_exit_code_one(self) -> None:
+        """Verify an unreadable log file exits 1 with permission guidance."""
+        locked = self.base_path / "locked_auth.log"
+        locked.write_text("2026-11-18T08:00:00Z host sshd[1]: test\n", encoding="utf-8")
+        locked.chmod(0o000)
+        try:
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(
+                    ["analyze", "--file", str(locked), "--db", str(self.db_path)]
+                )
+        finally:
+            locked.chmod(0o600)
+
+        self.assertEqual(code, 1)
+        self.assertIn("permission denied", err_buf.getvalue().lower())
+
+    def test_missing_config_path_returns_exit_code_one(self) -> None:
+        """Verify non-existent --config path exits 1 cleanly."""
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(
+                [
+                    "stats",
+                    "--config",
+                    str(self.base_path / "missing_config.json"),
+                    "--db",
+                    str(self.db_path),
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("not found", err_buf.getvalue().lower())
 
 if __name__ == "__main__":
     unittest.main()

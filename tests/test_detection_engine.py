@@ -5,6 +5,7 @@ import unittest
 from security_analyzer.detector import DetectionEngine
 from security_analyzer.models import SecurityAlert, Severity
 from security_analyzer.parser import parse_log_file, parse_log_line
+from security_analyzer.config import DetectionRulesConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -136,6 +137,45 @@ class TestDetectionEngine(unittest.TestCase):
             [item["line_number"] for item in brute_alert.evidence],
             [1, 2, 3, 12, 13, 14],
         )
+
+    def test_sliding_window_exact_boundary_inclusive_vs_exclusive(self) -> None:
+        """Verify failures spanning exactly window_seconds trigger, while +1s does not."""
+        # 5 failures spanning exactly 300 seconds (08:00:00 -> 08:05:00)
+        inclusive_lines = [
+            "2026-11-18T08:00:00+05:30 host sshd[1]: Failed password for root from 203.0.113.10 port 41001 ssh2",
+            "2026-11-18T08:01:00+05:30 host sshd[2]: Failed password for root from 203.0.113.10 port 41002 ssh2",
+            "2026-11-18T08:02:00+05:30 host sshd[3]: Failed password for root from 203.0.113.10 port 41003 ssh2",
+            "2026-11-18T08:03:00+05:30 host sshd[4]: Failed password for root from 203.0.113.10 port 41004 ssh2",
+            "2026-11-18T08:05:00+05:30 host sshd[5]: Failed password for root from 203.0.113.10 port 41005 ssh2",
+        ]
+        # 5 failures spanning 301 seconds (08:00:00 -> 08:05:01)
+        exclusive_lines = inclusive_lines[:-1] + [
+            "2026-11-18T08:05:01+05:30 host sshd[5]: Failed password for root from 203.0.113.10 port 41005 ssh2",
+        ]
+
+        inclusive_events = [
+            ev for i, line in enumerate(inclusive_lines, 1) if (ev := parse_log_line(line, i)) is not None
+        ]
+        exclusive_events = [
+            ev for i, line in enumerate(exclusive_lines, 1) if (ev := parse_log_line(line, i)) is not None
+        ]
+
+        engine = DetectionEngine(brute_force_threshold=5, brute_force_window_seconds=300)
+        self.assertEqual(len(engine.evaluate(inclusive_events)), 1)
+        self.assertEqual(engine.evaluate(exclusive_events), [])
+
+    def test_disabling_all_rules_returns_zero_alerts(self) -> None:
+        """Verify disabling all four rules produces an empty alert list."""
+        disabled_cfg = DetectionRulesConfig(
+            enabled_rules={
+                "SSH_REPEATED_FAILURES": False,
+                "SSH_MULTI_USER_PROBE": False,
+                "SSH_SUCCESS_AFTER_FAILURES": False,
+                "SUDO_REPEATED_FAILURES": False,
+            }
+        )
+        engine = DetectionEngine(rules_config=disabled_cfg)
+        self.assertEqual(engine.evaluate(self.sample_result.events), [])
 
 
 if __name__ == "__main__":
