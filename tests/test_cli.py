@@ -330,6 +330,79 @@ class TestStatsCommand(unittest.TestCase):
         self.assertEqual(data["total_alerts"], 5)
         self.assertEqual(len(data["top_source_ips"]), 2)
 
+class TestCliInputValidation(unittest.TestCase):
+    """Verify strict CLI input validation and non-zero error exit codes."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "validation_cli.db"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_invalid_ip_and_event_type_rejected(self) -> None:
+        """Verify malformed --ip and unknown --event-type exit with code 1."""
+        err_ip = io.StringIO()
+        with redirect_stderr(err_ip):
+            code_ip = main(
+                ["events", "--db", str(self.db_path), "--ip", "999.999.999.999"]
+            )
+        self.assertEqual(code_ip, 1)
+        self.assertIn("invalid ip address", err_ip.getvalue().lower())
+
+        err_type = io.StringIO()
+        with redirect_stderr(err_type):
+            code_type = main(
+                ["events", "--db", str(self.db_path), "--event-type", "ssh_typo"]
+            )
+        self.assertEqual(code_type, 1)
+        self.assertIn("invalid event type", err_type.getvalue().lower())
+
+    def test_invalid_severity_and_inverted_time_bounds_rejected(self) -> None:
+        """Verify invalid --severity, bad ISO dates, and inverted --since/--until fail."""
+        err_sev = io.StringIO()
+        with redirect_stderr(err_sev):
+            code_sev = main(
+                ["alerts", "--db", str(self.db_path), "--severity", "urgent"]
+            )
+        self.assertEqual(code_sev, 1)
+        self.assertIn("invalid severity", err_sev.getvalue().lower())
+
+        err_range = io.StringIO()
+        with redirect_stderr(err_range):
+            code_range = main(
+                [
+                    "events",
+                    "--db",
+                    str(self.db_path),
+                    "--since",
+                    "2026-11-20T10:00:00+05:30",
+                    "--until",
+                    "2026-11-18T10:00:00+05:30",
+                ]
+            )
+        self.assertEqual(code_range, 1)
+        self.assertIn("--since must be earlier", err_range.getvalue().lower())
+
+    def test_invalid_limit_top_and_year_rejected(self) -> None:
+        """Verify out-of-range --limit, --top, and --year return exit code 1."""
+        for argv in (
+            ["events", "--db", str(self.db_path), "--limit", "0"],
+            ["stats", "--db", str(self.db_path), "--top", "-3"],
+            [
+                "analyze",
+                "--file",
+                str(SAMPLE_LOG),
+                "--db",
+                str(self.db_path),
+                "--year",
+                "1800",
+            ],
+        ):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(argv)
+            self.assertEqual(code, 1, msg=f"Expected exit code 1 for {argv}")
 
 if __name__ == "__main__":
     unittest.main()

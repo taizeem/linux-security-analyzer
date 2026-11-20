@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import json
 import logging
 import sys
@@ -9,10 +10,93 @@ from security_analyzer.config import AppConfig, load_config
 from security_analyzer.database import DatabaseManager
 from security_analyzer.detector import DetectionEngine
 from security_analyzer.logger import get_logger
-from security_analyzer.parser import parse_log_file
-
+from security_analyzer.models import VALID_SEVERITIES
+from security_analyzer.parser import parse_log_file, validate_ip_address
 
 logger = get_logger(__name__)
+
+VALID_EVENT_TYPES = frozenset(
+    {
+        "ssh_failed_login",
+        "ssh_successful_login",
+        "ssh_invalid_user",
+        "sudo_command",
+        "sudo_auth_failure",
+        "session_opened",
+        "session_closed",
+        "other",
+    }
+)
+
+
+def _validate_positive_int(value: int, flag_name: str, max_value: int) -> int:
+    """Ensure an integer CLI option falls within [1, max_value]."""
+    if value < 1 or value > max_value:
+        raise ValueError(
+            f"{flag_name} must be between 1 and {max_value} (got {value})."
+        )
+    return value
+
+
+def _validate_ip_filter(ip_value: Optional[str]) -> Optional[str]:
+    """Validate and canonicalize an optional --ip filter."""
+    if ip_value is None:
+        return None
+    canonical = validate_ip_address(ip_value)
+    if canonical is None:
+        raise ValueError(f"Invalid IP address for --ip: '{ip_value}'.")
+    return canonical
+
+
+def _validate_severity_filter(severity: Optional[str]) -> Optional[str]:
+    """Validate an optional --severity filter."""
+    if severity is None:
+        return None
+    normalized = severity.strip().lower()
+    if normalized not in VALID_SEVERITIES:
+        raise ValueError(
+            f"Invalid severity '{severity}'. "
+            f"Choose from: {', '.join(sorted(VALID_SEVERITIES))}."
+        )
+    return normalized
+
+
+def _validate_event_type_filter(event_type: Optional[str]) -> Optional[str]:
+    """Validate an optional --event-type filter."""
+    if event_type is None:
+        return None
+    normalized = event_type.strip().lower()
+    if normalized not in VALID_EVENT_TYPES:
+        raise ValueError(
+            f"Invalid event type '{event_type}'. "
+            f"Choose from: {', '.join(sorted(VALID_EVENT_TYPES))}."
+        )
+    return normalized
+
+
+def _validate_iso_bound(value: Optional[str], flag_name: str) -> Optional[str]:
+    """Validate an ISO-8601 date or timestamp string for --since / --until."""
+    if value is None:
+        return None
+    raw = value.strip()
+    iso_candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        datetime.fromisoformat(iso_candidate)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid ISO-8601 timestamp for {flag_name}: '{value}'. "
+            "Example: 2026-11-18T08:00:00+05:30 or 2026-11-18."
+        ) from exc
+    return raw
+
+
+def _validate_year(year: Optional[int]) -> Optional[int]:
+    """Validate optional --year reference parameter."""
+    if year is None:
+        return None
+    if year < 1970 or year > 2100:
+        raise ValueError(f"--year must be between 1970 and 2100 (got {year}).")
+    return year
 
 
 def _resolve_config_and_db(args: argparse.Namespace) -> tuple[AppConfig, DatabaseManager]:
@@ -26,10 +110,11 @@ def _resolve_config_and_db(args: argparse.Namespace) -> tuple[AppConfig, Databas
 
 def _handle_analyze(args: argparse.Namespace) -> int:
     """Ingest a log file, run detection rules, persist results, and print summary."""
+    reference_year = _validate_year(args.year)
     app_config, db = _resolve_config_and_db(args)
     target_file = args.file if args.file else app_config.default_log_path
 
-    parse_result = parse_log_file(target_file, reference_year=args.year)
+    parse_result = parse_log_file(target_file, reference_year=reference_year)
     engine = DetectionEngine.from_config(app_config)
     alerts = engine.evaluate(parse_result.events)
     persistence = db.persist_scan_results(parse_result, alerts)
@@ -83,7 +168,6 @@ def _handle_analyze(args: argparse.Namespace) -> int:
 
     return 0
 
-
 def _truncate(text: Optional[str], max_len: int) -> str:
     """Truncate long terminal fields cleanly with an ellipsis."""
     if not text:
@@ -95,15 +179,23 @@ def _truncate(text: Optional[str], max_len: int) -> str:
 
 def _handle_events(args: argparse.Namespace) -> int:
     """Query and display stored authentication events."""
+    source_ip = _validate_ip_filter(args.source_ip)
+    event_type = _validate_event_type_filter(args.event_type)
+    since = _validate_iso_bound(args.since, "--since")
+    until = _validate_iso_bound(args.until, "--until")
+    if since and until and since > until:
+        raise ValueError("--since must be earlier than or equal to --until.")
+    limit = _validate_positive_int(args.limit, "--limit", max_value=10000)
+
     _, db = _resolve_config_and_db(args)
     events = db.query_events(
-        event_type=args.event_type,
+        event_type=event_type,
         username=args.username,
-        source_ip=args.source_ip,
+        source_ip=source_ip,
         service=args.service,
-        since=args.since,
-        until=args.until,
-        limit=args.limit,
+        since=since,
+        until=until,
+        limit=limit,
     )
 
     if args.as_json:
@@ -135,13 +227,17 @@ def _handle_events(args: argparse.Namespace) -> int:
 
 def _handle_alerts(args: argparse.Namespace) -> int:
     """Query and display stored security alerts with optional evidence drill-down."""
+    severity = _validate_severity_filter(args.severity)
+    source_ip = _validate_ip_filter(args.source_ip)
+    limit = _validate_positive_int(args.limit, "--limit", max_value=10000)
+
     _, db = _resolve_config_and_db(args)
     alerts = db.query_alerts(
-        severity=args.severity,
+        severity=severity,
         rule_id=args.rule_id,
-        source_ip=args.source_ip,
+        source_ip=source_ip,
         username=args.username,
-        limit=args.limit,
+        limit=limit,
     )
 
     if args.as_json:
@@ -176,11 +272,11 @@ def _handle_alerts(args: argparse.Namespace) -> int:
     print(f"Showing {len(alerts)} alert(s).")
     return 0
 
-
 def _handle_stats(args: argparse.Namespace) -> int:
     """Display aggregated authentication and alert statistics from SQLite."""
+    top_n = _validate_positive_int(args.top, "--top", max_value=500)
     _, db = _resolve_config_and_db(args)
-    stats = db.get_statistics(top_n=args.top)
+    stats = db.get_statistics(top_n=top_n)
 
     if args.as_json:
         print(json.dumps(stats, indent=2))
@@ -202,14 +298,14 @@ def _handle_stats(args: argparse.Namespace) -> int:
         f"MEDIUM: {sev['medium']} | LOW: {sev['low']}"
     )
 
-    print(f"\nTop Source IP Addresses (limit {args.top}):")
+    print(f"\nTop Source IP Addresses (limit {top_n}):")
     if stats["top_source_ips"]:
         for entry in stats["top_source_ips"]:
             print(f"  {entry['source_ip']:<30} {entry['count']} event(s)")
     else:
         print("  None recorded")
 
-    print(f"\nMost Targeted Usernames (limit {args.top}):")
+    print(f"\nMost Targeted Usernames (limit {top_n}):")
     if stats["top_targeted_usernames"]:
         for entry in stats["top_targeted_usernames"]:
             print(f"  {entry['username']:<20} {entry['count']} failed/invalid event(s)")
