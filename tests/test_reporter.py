@@ -1,5 +1,5 @@
 import json
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import io
 from pathlib import Path
 import tempfile
@@ -173,5 +173,72 @@ class TestAuthenticationStatistics(unittest.TestCase):
         terminal = render_terminal_report(data)
         self.assertIn("SSH Failure Rate:          0.00%", terminal)
 
+class TestHistoricalReporting(unittest.TestCase):
+    """Verify time-bounded historical reporting with --since, --until, and --days."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.db = DatabaseManager(self.base_path / "historical_report.db")
+        self.db.initialize()
+
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        alerts = DetectionEngine().evaluate(parsed.events)
+        self.db.persist_scan_results(parsed, alerts)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_historical_report_filters_events_and_alerts_to_window(self) -> None:
+        """Verify --since/--until scopes summary counts and alerts to that window."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(
+                [
+                    "report",
+                    "--db",
+                    str(self.db.db_path),
+                    "--format",
+                    "json",
+                    "--since",
+                    "2026-11-18T08:02:00+05:30",
+                    "--until",
+                    "2026-11-18T08:02:59+05:30",
+                ]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(
+            payload["metadata"]["period"],
+            {
+                "since": "2026-11-18T08:02:00+05:30",
+                "until": "2026-11-18T08:02:59+05:30",
+            },
+        )
+        # Only deploy's 5 failed logins + 1 accepted login fall inside 08:02:00..08:02:59
+        self.assertEqual(payload["summary"]["total_events"], 6)
+        self.assertEqual(payload["summary"]["total_failed_logins"], 5)
+        self.assertEqual(payload["summary"]["total_successful_logins"], 1)
+        self.assertEqual(payload["summary"]["total_alerts"], 2)
+
+    def test_combining_days_and_since_returns_exit_code_one(self) -> None:
+        """Verify mutually exclusive --days and --since flags fail cleanly."""
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(
+                [
+                    "report",
+                    "--db",
+                    str(self.db.db_path),
+                    "--days",
+                    "7",
+                    "--since",
+                    "2026-11-18",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("cannot combine --days with --since", err_buf.getvalue().lower())
+
+        
 if __name__ == "__main__":
     unittest.main()

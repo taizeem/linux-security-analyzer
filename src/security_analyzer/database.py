@@ -470,6 +470,8 @@ class DatabaseManager:
         rule_id: Optional[str] = None,
         source_ip: Optional[str] = None,
         username: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """Query stored security alerts ordered by severity priority and recency."""
@@ -491,6 +493,12 @@ class DatabaseManager:
         if username:
             conditions.append("username = ?")
             params.append(username)
+        if since:
+            conditions.append("last_seen >= ?")
+            params.append(since)
+        if until:
+            conditions.append("first_seen <= ?")
+            params.append(until)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
@@ -512,88 +520,118 @@ class DatabaseManager:
                 item["evidence"] = json.loads(item.pop("evidence_json"))
                 results.append(item)
             return results
-
-    def get_statistics(self, top_n: int = 10) -> Dict[str, Any]:
+    def get_statistics(
+        self,
+        top_n: int = 10,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Compute aggregated authentication and alert statistics from SQLite."""
         if top_n < 1:
             raise ValueError("top_n must be at least 1")
 
+        ev_conditions: List[str] = []
+        ev_params: List[Any] = []
+        if since:
+            ev_conditions.append("timestamp >= ?")
+            ev_params.append(since)
+        if until:
+            ev_conditions.append("timestamp <= ?")
+            ev_params.append(until)
+
+        def _ev_where(extra: Optional[str] = None) -> Tuple[str, List[Any]]:
+            parts = list(ev_conditions)
+            if extra:
+                parts.append(extra)
+            clause = f"WHERE {' AND '.join(parts)}" if parts else ""
+            return clause, list(ev_params)
+
+        al_conditions: List[str] = []
+        al_params: List[Any] = []
+        if since:
+            al_conditions.append("last_seen >= ?")
+            al_params.append(since)
+        if until:
+            al_conditions.append("first_seen <= ?")
+            al_params.append(until)
+        al_where = f"WHERE {' AND '.join(al_conditions)}" if al_conditions else ""
+
         with self._connect() as conn:
+            w, p = _ev_where()
             total_events = int(
-                conn.execute("SELECT COUNT(*) AS c FROM auth_events;").fetchone()["c"]
+                conn.execute(f"SELECT COUNT(*) AS c FROM auth_events {w};", p).fetchone()["c"]
             )
+
+            w, p = _ev_where("event_type = 'ssh_successful_login'")
             total_successful_logins = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM auth_events "
-                    "WHERE event_type = 'ssh_successful_login';"
-                ).fetchone()["c"]
+                conn.execute(f"SELECT COUNT(*) AS c FROM auth_events {w};", p).fetchone()["c"]
             )
+
+            w, p = _ev_where("event_type = 'ssh_failed_login'")
             total_failed_logins = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM auth_events "
-                    "WHERE event_type = 'ssh_failed_login';"
-                ).fetchone()["c"]
+                conn.execute(f"SELECT COUNT(*) AS c FROM auth_events {w};", p).fetchone()["c"]
             )
+
+            w, p = _ev_where("is_invalid_user = 1")
             total_invalid_users = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM auth_events "
-                    "WHERE is_invalid_user = 1;"
-                ).fetchone()["c"]
+                conn.execute(f"SELECT COUNT(*) AS c FROM auth_events {w};", p).fetchone()["c"]
+            )
+
+            w, p = _ev_where(
+                "service = 'sudo' AND event_type IN ('sudo_command', 'sudo_auth_failure')"
             )
             total_sudo_events = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM auth_events "
-                    "WHERE service = 'sudo' "
-                    "AND event_type IN ('sudo_command', 'sudo_auth_failure');"
-                ).fetchone()["c"]
+                conn.execute(f"SELECT COUNT(*) AS c FROM auth_events {w};", p).fetchone()["c"]
             )
+
+            w, p = _ev_where("source_ip IS NOT NULL")
             unique_source_ips = int(
                 conn.execute(
-                    "SELECT COUNT(DISTINCT source_ip) AS c FROM auth_events "
-                    "WHERE source_ip IS NOT NULL;"
-                ).fetchone()["c"]
-            )
-            unique_targeted_usernames = int(
-                conn.execute(
-                    "SELECT COUNT(DISTINCT username) AS c FROM auth_events "
-                    "WHERE username IS NOT NULL "
-                    "AND event_type IN ('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure');"
-                ).fetchone()["c"]
-            )
-            total_alerts = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM security_alerts;"
+                    f"SELECT COUNT(DISTINCT source_ip) AS c FROM auth_events {w};", p
                 ).fetchone()["c"]
             )
 
+            w, p = _ev_where(
+                "username IS NOT NULL AND event_type IN "
+                "('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure')"
+            )
+            unique_targeted_usernames = int(
+                conn.execute(
+                    f"SELECT COUNT(DISTINCT username) AS c FROM auth_events {w};", p
+                ).fetchone()["c"]
+            )
+
+            total_alerts = int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS c FROM security_alerts {al_where};",
+                    al_params,
+                ).fetchone()["c"]
+            )
+
+            w, p = _ev_where("event_type = 'ssh_successful_login'")
             auth_method_rows = conn.execute(
-                """
-                SELECT COALESCE(auth_method, 'unknown') AS method, COUNT(*) AS cnt
-                FROM auth_events
-                WHERE event_type = 'ssh_successful_login'
-                GROUP BY method
-                ORDER BY cnt DESC, method ASC;
-                """
+                f"SELECT COALESCE(auth_method, 'unknown') AS method, COUNT(*) AS cnt "
+                f"FROM auth_events {w} GROUP BY method ORDER BY cnt DESC, method ASC;",
+                p,
             ).fetchall()
             successful_logins_by_method = {
                 str(row["method"]): int(row["cnt"]) for row in auth_method_rows
             }
 
+            w, p = _ev_where()
             event_type_rows = conn.execute(
-                """
-                SELECT event_type, COUNT(*) AS cnt
-                FROM auth_events
-                GROUP BY event_type
-                ORDER BY cnt DESC, event_type ASC;
-                """
+                f"SELECT event_type, COUNT(*) AS cnt FROM auth_events {w} "
+                "GROUP BY event_type ORDER BY cnt DESC, event_type ASC;",
+                p,
             ).fetchall()
             events_by_type = {
                 str(row["event_type"]): int(row["cnt"]) for row in event_type_rows
             }
 
             severity_rows = conn.execute(
-                "SELECT severity, COUNT(*) AS cnt FROM security_alerts "
-                "GROUP BY severity;"
+                f"SELECT severity, COUNT(*) AS cnt FROM security_alerts {al_where} "
+                "GROUP BY severity;",
+                al_params,
             ).fetchall()
             alerts_by_severity: Dict[str, int] = {
                 "critical": 0,
@@ -604,33 +642,25 @@ class DatabaseManager:
             for row in severity_rows:
                 alerts_by_severity[str(row["severity"])] = int(row["cnt"])
 
+            w, p = _ev_where("source_ip IS NOT NULL")
             top_ips_rows = conn.execute(
-                """
-                SELECT source_ip, COUNT(*) AS event_count
-                FROM auth_events
-                WHERE source_ip IS NOT NULL
-                GROUP BY source_ip
-                ORDER BY event_count DESC, source_ip ASC
-                LIMIT ?;
-                """,
-                (top_n,),
+                f"SELECT source_ip, COUNT(*) AS event_count FROM auth_events {w} "
+                "GROUP BY source_ip ORDER BY event_count DESC, source_ip ASC LIMIT ?;",
+                p + [top_n],
             ).fetchall()
             top_source_ips = [
                 {"source_ip": str(r["source_ip"]), "count": int(r["event_count"])}
                 for r in top_ips_rows
             ]
 
+            w, p = _ev_where(
+                "username IS NOT NULL AND event_type IN "
+                "('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure')"
+            )
             top_users_rows = conn.execute(
-                """
-                SELECT username, COUNT(*) AS event_count
-                FROM auth_events
-                WHERE username IS NOT NULL
-                  AND event_type IN ('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure')
-                GROUP BY username
-                ORDER BY event_count DESC, username ASC
-                LIMIT ?;
-                """,
-                (top_n,),
+                f"SELECT username, COUNT(*) AS event_count FROM auth_events {w} "
+                "GROUP BY username ORDER BY event_count DESC, username ASC LIMIT ?;",
+                p + [top_n],
             ).fetchall()
             top_targeted_usernames = [
                 {"username": str(r["username"]), "count": int(r["event_count"])}

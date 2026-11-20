@@ -1,5 +1,5 @@
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import sys
@@ -335,8 +335,21 @@ def _handle_stats(args: argparse.Namespace) -> int:
 def _handle_report(args: argparse.Namespace) -> int:
     """Generate a terminal or JSON security report from stored SQLite data."""
     top_n = _validate_positive_int(args.top, "--top", max_value=500)
+    if args.days is not None and args.since is not None:
+        raise ValueError("Cannot combine --days with --since; choose one.")
+
+    since = _validate_iso_bound(args.since, "--since")
+    until = _validate_iso_bound(args.until, "--until")
+
+    if args.days is not None:
+        days = _validate_positive_int(args.days, "--days", max_value=3650)
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    if since and until and since > until:
+        raise ValueError("--since must be earlier than or equal to --until.")
+
     _, db = _resolve_config_and_db(args)
-    report_data = build_report_data(db, top_n=top_n)
+    report_data = build_report_data(db, top_n=top_n, since=since, until=until)
 
     if args.format == "json":
         rendered = render_json_report(report_data)
@@ -492,6 +505,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=None,
         help="Optional output file path to save the report.",
+    )
+    report_parser.add_argument(
+        "--since",
+        default=None,
+        help="Include historical data at or after ISO-8601 timestamp.",
+    )
+    report_parser.add_argument(
+        "--until",
+        default=None,
+        help="Include historical data at or before ISO-8601 timestamp.",
+    )
+    report_parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Shortcut to report over the last N days (cannot combine with --since).",
     )
     report_parser.add_argument("--top", type=int, default=10, help="Number of top IPs/users to include.")
     report_parser.set_defaults(handler=_handle_report)

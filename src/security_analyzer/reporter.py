@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional
 
 from security_analyzer import __app_name__, __version__
 from security_analyzer.database import DatabaseManager
@@ -13,10 +13,12 @@ def build_report_data(
     db: DatabaseManager,
     top_n: int = 10,
     alert_limit: int = 50,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble a canonical security report payload from SQLite."""
-    stats = db.get_statistics(top_n=top_n)
-    alerts = db.query_alerts(limit=alert_limit)
+    stats = db.get_statistics(top_n=top_n, since=since, until=until)
+    alerts = db.query_alerts(since=since, until=until, limit=alert_limit)
 
     return {
         "metadata": {
@@ -25,6 +27,10 @@ def build_report_data(
             "app_version": __version__,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "database_path": str(db.db_path),
+            "period": {
+                "since": since,
+                "until": until,
+            },
         },
         "summary": {
             "total_events": stats["total_events"],
@@ -46,7 +52,6 @@ def build_report_data(
         "scan_runs": stats["recent_scan_runs"],
     }
 
-
 def render_terminal_report(
     report_data: Dict[str, Any],
     max_evidence_per_alert: int = 5,
@@ -63,6 +68,10 @@ def render_terminal_report(
     lines.append(f"Generated At: {meta['generated_at']}")
     lines.append(f"Tool Version: {meta['app_name']} {meta['app_version']}")
     lines.append(f"Database:     {meta['database_path']}")
+    period = meta.get("period", {})
+    since_label = period.get("since") or "beginning"
+    until_label = period.get("until") or "present"
+    lines.append(f"Period:       {since_label} -> {until_label}")
     lines.append("")
 
     lines.append("1. AUTHENTICATION SUMMARY")
