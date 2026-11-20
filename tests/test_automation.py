@@ -118,6 +118,55 @@ class TestScheduledScanScript(unittest.TestCase):
             self.assertEqual(payload["summary"]["total_events"], 25)
             self.assertEqual(payload["summary"]["total_alerts"], 5)
             self.assertIn("ACTION REQUIRED", txt_reports[0].read_text(encoding="utf-8"))
+    def test_scheduled_scan_returns_exit_10_on_missing_log_file(self) -> None:
+        """Verify missing log file exits with code 10 and logs ERROR without writing reports."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            report_dir = tmp_path / "reports"
+            run_log = tmp_path / "scheduled_scan.log"
+
+            env = os.environ.copy()
+            env["LSA_LOG_FILE"] = str(tmp_path / "missing_auth.log")
+            env["LSA_DB_PATH"] = str(tmp_path / "test.db")
+            env["LSA_REPORT_DIR"] = str(report_dir)
+            env["LSA_RUN_LOG"] = str(run_log)
+
+            result = subprocess.run(
+                [str(SCHEDULED_SCAN_SCRIPT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 10)
+            self.assertIn("cannot read log file", result.stderr.lower())
+            self.assertIn("ERROR", run_log.read_text(encoding="utf-8"))
+            self.assertEqual(list(report_dir.glob("*")), [])
+
+    def test_scheduled_scan_returns_exit_11_on_invalid_config(self) -> None:
+        """Verify analyze failure (broken config JSON) exits with code 11."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            bad_cfg = tmp_path / "broken.json"
+            bad_cfg.write_text("{ bad json", encoding="utf-8")
+            run_log = tmp_path / "scheduled_scan.log"
+
+            env = os.environ.copy()
+            env["LSA_LOG_FILE"] = str(SAMPLE_LOG)
+            env["LSA_DB_PATH"] = str(tmp_path / "test.db")
+            env["LSA_REPORT_DIR"] = str(tmp_path / "reports")
+            env["LSA_RUN_LOG"] = str(run_log)
+            env["LSA_CONFIG_PATH"] = str(bad_cfg)
+
+            result = subprocess.run(
+                [str(SCHEDULED_SCAN_SCRIPT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 11)
+            self.assertIn("analyze stage failed", result.stderr.lower())
 
 
 if __name__ == "__main__":

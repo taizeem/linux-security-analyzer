@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # scripts/scheduled_scan.sh — Automated authentication log scan and report generator
+#
+# Exit codes:
+#   0  - Success
+#   10 - Target authentication log file missing or unreadable
+#   11 - Analyze command failed
+#   12 - Report generation failed
 
 set -euo pipefail
 umask 027
 
-# Ensure standard system binary directories are in PATH under minimal cron environments
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+readonly E_LOG_UNREADABLE=10
+readonly E_ANALYZE_FAILED=11
+readonly E_REPORT_FAILED=12
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -27,6 +36,27 @@ log_msg() {
     printf "%s | %-7s | scheduled_scan | %s\n" "${ts}" "${level}" "$*" >> "${RUN_LOG}"
 }
 
+on_error() {
+    local exit_code="$1"
+    local line_no="$2"
+    log_msg "ERROR" "Unexpected failure at line ${line_no} (exit code ${exit_code})"
+    echo "Error: scheduled_scan.sh failed at line ${line_no} (exit code ${exit_code})" >&2
+}
+trap 'on_error $? $LINENO' ERR
+
+# Pre-flight checks
+if [[ ! -x "${RUN_SCRIPT}" ]]; then
+    log_msg "ERROR" "Launcher script is missing or not executable: ${RUN_SCRIPT}"
+    echo "Error: launcher script not executable: ${RUN_SCRIPT}" >&2
+    exit "${E_ANALYZE_FAILED}"
+fi
+
+if [[ ! -f "${LOG_FILE}" || ! -r "${LOG_FILE}" ]]; then
+    log_msg "ERROR" "Log file is missing or unreadable: ${LOG_FILE}"
+    echo "Error: cannot read log file: ${LOG_FILE}" >&2
+    exit "${E_LOG_UNREADABLE}"
+fi
+
 TIMESTAMP_TAG="$(date -u +"%Y%m%d_%H%M%SZ")"
 JSON_REPORT="${REPORT_DIR}/security_report_${TIMESTAMP_TAG}.json"
 TXT_REPORT="${REPORT_DIR}/security_report_${TIMESTAMP_TAG}.txt"
@@ -39,10 +69,24 @@ fi
 log_msg "INFO" "Starting scheduled scan for log=${LOG_FILE}"
 
 # 1. Analyze log file and store deduplicated events/alerts in SQLite
-"${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" analyze --file "${LOG_FILE}" >> "${RUN_LOG}" 2>&1
+if ! "${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" analyze --file "${LOG_FILE}" >> "${RUN_LOG}" 2>&1; then
+    log_msg "ERROR" "Analyze stage failed for log=${LOG_FILE}"
+    echo "Error: analyze stage failed (see ${RUN_LOG})" >&2
+    exit "${E_ANALYZE_FAILED}"
+fi
 
 # 2. Generate timestamped JSON and terminal reports
-"${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" report --format json --output "${JSON_REPORT}" >> "${RUN_LOG}" 2>&1
-"${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" report --format terminal --output "${TXT_REPORT}" >> "${RUN_LOG}" 2>&1
+if ! "${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" report --format json --output "${JSON_REPORT}" >> "${RUN_LOG}" 2>&1; then
+    log_msg "ERROR" "JSON report export failed: ${JSON_REPORT}"
+    echo "Error: JSON report export failed (see ${RUN_LOG})" >&2
+    exit "${E_REPORT_FAILED}"
+fi
+
+if ! "${RUN_SCRIPT}" "${COMMON_FLAGS[@]}" report --format terminal --output "${TXT_REPORT}" >> "${RUN_LOG}" 2>&1; then
+    log_msg "ERROR" "Terminal report export failed: ${TXT_REPORT}"
+    echo "Error: terminal report export failed (see ${RUN_LOG})" >&2
+    exit "${E_REPORT_FAILED}"
+fi
 
 log_msg "INFO" "Scheduled scan completed successfully. Reports: ${JSON_REPORT}, ${TXT_REPORT}"
+exit 0
