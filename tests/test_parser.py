@@ -198,6 +198,58 @@ class TestMalformedLogHandling(unittest.TestCase):
         self.assertIn("line 11", cm.output[1])
         self.assertIn("line 12", cm.output[2])
 
+class TestParserEdgeCases(unittest.TestCase):
+    """Verify QA edge cases: missing usernames, IPv6 forms, leap years, and auth methods."""
+
+    def test_ssh_disconnect_without_username_parses_as_other(self) -> None:
+        """Verify valid syslog lines without a username parse cleanly with username=None."""
+        line = (
+            "2026-11-18T08:05:12+05:30 bastion-01 sshd[12345]: "
+            "Received disconnect from 192.0.2.10 port 51234:11: disconnected by user"
+        )
+        entry = parse_log_entry(line, line_number=50)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry["event_type"], "other")
+        self.assertIsNone(entry["username"])
+
+    def test_keyboard_interactive_ssh_login_extraction(self) -> None:
+        """Verify keyboard-interactive/pam SSH authentication method is extracted."""
+        line = (
+            "2026-11-18T08:06:00Z bastion-01 sshd[12346]: "
+            "Accepted keyboard-interactive/pam for ops from 2001:DB8::1 port 44321 ssh2"
+        )
+        entry = parse_log_entry(line, line_number=51)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry["event_type"], "ssh_successful_login")
+        self.assertEqual(entry["auth_method"], "keyboard-interactive/pam")
+        self.assertEqual(entry["username"], "ops")
+        # Uppercase IPv6 is canonicalized to lowercase RFC 5952 form
+        self.assertEqual(entry["source_ip"], "2001:db8::1")
+
+    def test_leap_year_and_utc_z_timestamp_validation(self) -> None:
+        """Verify leap-day 2024-02-29Z is accepted and non-leap 2026-02-29Z is rejected."""
+        self.assertEqual(
+            normalize_timestamp("2024-02-29T23:59:59Z"),
+            "2024-02-29T23:59:59+00:00",
+        )
+        self.assertIsNone(normalize_timestamp("2026-02-29T23:59:59Z"))
+
+    def test_invalid_ipv6_rejected_and_truncated_sudo_handled(self) -> None:
+        """Verify malformed IPv6 returns None and truncated sudo lines do not crash."""
+        self.assertIsNone(validate_ip_address("2001:db8:::1"))
+        self.assertEqual(validate_ip_address("::1"), "::1")
+
+        truncated_sudo = (
+            "2026-11-18T08:07:00+05:30 host sudo: "
+            "bob : TTY=pts/0 ; PWD=/home/bob"
+        )
+        entry = parse_log_entry(truncated_sudo, line_number=52)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry["event_type"], "other")
+
 
 if __name__ == "__main__":
     unittest.main()
