@@ -132,5 +132,46 @@ class TestJsonReporting(unittest.TestCase):
         saved = json.loads(out_file.read_text(encoding="utf-8"))
         self.assertEqual(saved["summary"]["alerts_by_severity"]["critical"], 1)
 
+class TestAuthenticationStatistics(unittest.TestCase):
+    """Verify enriched authentication statistics in reports and empty databases."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.db = DatabaseManager(self.base_path / "stats_report.db")
+        self.db.initialize()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_report_statistics_include_failure_rate_and_auth_methods(self) -> None:
+        """Verify failure rate, auth methods, and unique counts are accurate."""
+        parsed = parse_log_file(SAMPLE_LOG, reference_year=2026)
+        alerts = DetectionEngine().evaluate(parsed.events)
+        self.db.persist_scan_results(parsed, alerts)
+
+        data = build_report_data(self.db)
+        summary = data["summary"]
+        # 11 failed / (11 + 3) = 78.57%
+        self.assertEqual(summary["ssh_failure_rate_percent"], 78.57)
+        self.assertEqual(summary["unique_source_ips"], 4)
+        self.assertEqual(
+            summary["successful_logins_by_method"],
+            {"publickey": 2, "password": 1},
+        )
+        self.assertIn("ssh_failed_login", summary["events_by_type"])
+
+        terminal = render_terminal_report(data)
+        self.assertIn("SSH Failure Rate:          78.57%", terminal)
+        self.assertIn("publickey=2, password=1", terminal)
+
+    def test_empty_database_report_avoids_zero_division(self) -> None:
+        """Verify an empty database reports 0.0% failure rate cleanly."""
+        data = build_report_data(self.db)
+        self.assertEqual(data["summary"]["ssh_failure_rate_percent"], 0.0)
+        self.assertEqual(data["summary"]["successful_logins_by_method"], {})
+        terminal = render_terminal_report(data)
+        self.assertIn("SSH Failure Rate:          0.00%", terminal)
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,8 +30,13 @@ def build_report_data(
             "total_events": stats["total_events"],
             "total_successful_logins": stats["total_successful_logins"],
             "total_failed_logins": stats["total_failed_logins"],
+            "ssh_failure_rate_percent": stats["ssh_failure_rate_percent"],
             "total_invalid_users": stats["total_invalid_users"],
             "total_sudo_events": stats["total_sudo_events"],
+            "unique_source_ips": stats["unique_source_ips"],
+            "unique_targeted_usernames": stats["unique_targeted_usernames"],
+            "successful_logins_by_method": stats["successful_logins_by_method"],
+            "events_by_type": stats["events_by_type"],
             "total_alerts": stats["total_alerts"],
             "alerts_by_severity": stats["alerts_by_severity"],
         },
@@ -65,8 +70,20 @@ def render_terminal_report(
     lines.append(f"  Total Events Analyzed:     {summary['total_events']}")
     lines.append(f"  Total Successful Logins:   {summary['total_successful_logins']}")
     lines.append(f"  Total Failed Logins:       {summary['total_failed_logins']}")
+    lines.append(
+        f"  SSH Failure Rate:          {summary['ssh_failure_rate_percent']:.2f}%"
+    )
     lines.append(f"  Invalid Username Probes:   {summary['total_invalid_users']}")
     lines.append(f"  Sudo Events Observed:      {summary['total_sudo_events']}")
+    lines.append(f"  Unique Source IPs:         {summary['unique_source_ips']}")
+    lines.append(
+        f"  Unique Targeted Users:     {summary['unique_targeted_usernames']}"
+    )
+    methods = summary.get("successful_logins_by_method", {})
+    method_label = (
+        ", ".join(f"{k}={v}" for k, v in methods.items()) if methods else "none"
+    )
+    lines.append(f"  Successful Auth Methods:   {method_label}")
     lines.append(f"  Total Alerts Generated:    {summary['total_alerts']}")
     lines.append(
         f"  Alerts by Severity:        "

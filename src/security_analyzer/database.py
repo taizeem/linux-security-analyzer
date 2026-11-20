@@ -547,11 +547,49 @@ class DatabaseManager:
                     "AND event_type IN ('sudo_command', 'sudo_auth_failure');"
                 ).fetchone()["c"]
             )
+            unique_source_ips = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT source_ip) AS c FROM auth_events "
+                    "WHERE source_ip IS NOT NULL;"
+                ).fetchone()["c"]
+            )
+            unique_targeted_usernames = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT username) AS c FROM auth_events "
+                    "WHERE username IS NOT NULL "
+                    "AND event_type IN ('ssh_failed_login', 'ssh_invalid_user', 'sudo_auth_failure');"
+                ).fetchone()["c"]
+            )
             total_alerts = int(
                 conn.execute(
                     "SELECT COUNT(*) AS c FROM security_alerts;"
                 ).fetchone()["c"]
             )
+
+            auth_method_rows = conn.execute(
+                """
+                SELECT COALESCE(auth_method, 'unknown') AS method, COUNT(*) AS cnt
+                FROM auth_events
+                WHERE event_type = 'ssh_successful_login'
+                GROUP BY method
+                ORDER BY cnt DESC, method ASC;
+                """
+            ).fetchall()
+            successful_logins_by_method = {
+                str(row["method"]): int(row["cnt"]) for row in auth_method_rows
+            }
+
+            event_type_rows = conn.execute(
+                """
+                SELECT event_type, COUNT(*) AS cnt
+                FROM auth_events
+                GROUP BY event_type
+                ORDER BY cnt DESC, event_type ASC;
+                """
+            ).fetchall()
+            events_by_type = {
+                str(row["event_type"]): int(row["cnt"]) for row in event_type_rows
+            }
 
             severity_rows = conn.execute(
                 "SELECT severity, COUNT(*) AS cnt FROM security_alerts "
@@ -610,12 +648,24 @@ class DatabaseManager:
             ).fetchall()
             recent_scan_runs = [dict(row) for row in recent_runs_rows]
 
+        total_ssh_attempts = total_successful_logins + total_failed_logins
+        ssh_failure_rate_percent = (
+            round((total_failed_logins / total_ssh_attempts) * 100.0, 2)
+            if total_ssh_attempts > 0
+            else 0.0
+        )
+
         return {
             "total_events": total_events,
             "total_successful_logins": total_successful_logins,
             "total_failed_logins": total_failed_logins,
+            "ssh_failure_rate_percent": ssh_failure_rate_percent,
             "total_invalid_users": total_invalid_users,
             "total_sudo_events": total_sudo_events,
+            "unique_source_ips": unique_source_ips,
+            "unique_targeted_usernames": unique_targeted_usernames,
+            "successful_logins_by_method": successful_logins_by_method,
+            "events_by_type": events_by_type,
             "total_alerts": total_alerts,
             "alerts_by_severity": alerts_by_severity,
             "top_source_ips": top_source_ips,
