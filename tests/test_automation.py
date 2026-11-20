@@ -1,5 +1,6 @@
 import json
 import os
+import fcntl
 from pathlib import Path
 import subprocess
 import tempfile
@@ -168,6 +169,38 @@ class TestScheduledScanScript(unittest.TestCase):
             self.assertEqual(result.returncode, 11)
             self.assertIn("analyze stage failed", result.stderr.lower())
 
+    def test_scheduled_scan_skips_with_exit_20_when_lock_is_held(self) -> None:
+        """Verify flock prevents overlapping scans and exits with code 20."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            lock_path = tmp_path / "scan.lock"
+            run_log = tmp_path / "scheduled_scan.log"
+            report_dir = tmp_path / "reports"
+
+            env = os.environ.copy()
+            env["LSA_LOG_FILE"] = str(SAMPLE_LOG)
+            env["LSA_DB_PATH"] = str(tmp_path / "locked.db")
+            env["LSA_REPORT_DIR"] = str(report_dir)
+            env["LSA_RUN_LOG"] = str(run_log)
+            env["LSA_LOCK_FILE"] = str(lock_path)
+
+            with open(lock_path, mode="w", encoding="utf-8") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    result = subprocess.run(
+                        [str(SCHEDULED_SCAN_SCRIPT)],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                finally:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+            self.assertEqual(result.returncode, 20)
+            self.assertIn("already running", result.stderr.lower())
+            self.assertIn("WARNING", run_log.read_text(encoding="utf-8"))
+            self.assertEqual(list(report_dir.glob("*")), [])
 
 if __name__ == "__main__":
     unittest.main()

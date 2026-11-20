@@ -6,6 +6,7 @@
 #   10 - Target authentication log file missing or unreadable
 #   11 - Analyze command failed
 #   12 - Report generation failed
+#   20 - Skipped because another scan instance already holds the lock
 
 set -euo pipefail
 umask 027
@@ -15,6 +16,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 readonly E_LOG_UNREADABLE=10
 readonly E_ANALYZE_FAILED=11
 readonly E_REPORT_FAILED=12
+readonly E_LOCK_CONTENTION=20
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -24,9 +26,10 @@ LOG_FILE="${LSA_LOG_FILE:-/var/log/auth.log}"
 DB_PATH="${LSA_DB_PATH:-${PROJECT_ROOT}/data/security_events.db}"
 REPORT_DIR="${LSA_REPORT_DIR:-${PROJECT_ROOT}/reports}"
 RUN_LOG="${LSA_RUN_LOG:-${PROJECT_ROOT}/data/scheduled_scan.log}"
+LOCK_FILE="${LSA_LOCK_FILE:-${PROJECT_ROOT}/data/scheduled_scan.lock}"
 CONFIG_PATH="${LSA_CONFIG_PATH:-}"
 
-mkdir -p "$(dirname "${DB_PATH}")" "${REPORT_DIR}" "$(dirname "${RUN_LOG}")"
+mkdir -p "$(dirname "${DB_PATH}")" "${REPORT_DIR}" "$(dirname "${RUN_LOG}")" "$(dirname "${LOCK_FILE}")"
 
 log_msg() {
     local level="$1"
@@ -43,6 +46,18 @@ on_error() {
     echo "Error: scheduled_scan.sh failed at line ${line_no} (exit code ${exit_code})" >&2
 }
 trap 'on_error $? $LINENO' ERR
+
+# Acquire a non-blocking exclusive kernel lock to prevent overlapping scans
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"${LOCK_FILE}"
+    if ! flock -n 9; then
+        log_msg "WARNING" "Another scheduled scan is already running (lock: ${LOCK_FILE}); skipping."
+        echo "Warning: another scheduled scan is already running; skipping." >&2
+        exit "${E_LOCK_CONTENTION}"
+    fi
+else
+    log_msg "WARNING" "'flock' not available; proceeding without overlap lock."
+fi
 
 # Pre-flight checks
 if [[ ! -x "${RUN_SCRIPT}" ]]; then
