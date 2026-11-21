@@ -14,7 +14,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestDatabaseInitialization(unittest.TestCase):
-    """Verify Checkpoint 5.2: database creation, pragmas, and idempotency."""
+    """Verify database creation, pragmas, and idempotency."""
 
     def setUp(self) -> None:
         """Create an isolated temporary directory for each database test."""
@@ -67,7 +67,7 @@ class TestDatabaseInitialization(unittest.TestCase):
 
 
 class TestEventPersistence(unittest.TestCase):
-    """Verify Checkpoint 5.3: storing parsed AuthEvents in SQLite."""
+    """Verify storing parsed AuthEvents in SQLite."""
 
     def setUp(self) -> None:
         """Create a fresh initialized test database for each test."""
@@ -100,7 +100,7 @@ class TestEventPersistence(unittest.TestCase):
         self.assertEqual(self.db.count_events(), 0)
 
 class TestAlertPersistence(unittest.TestCase):
-    """Verify Checkpoint 5.4: storing SecurityAlerts and JSON evidence in SQLite."""
+    """Verify storing SecurityAlerts and JSON evidence in SQLite."""
 
     def setUp(self) -> None:
         """Create a fresh initialized test database for each test."""
@@ -149,7 +149,7 @@ class TestAlertPersistence(unittest.TestCase):
         self.assertEqual(self.db.count_alerts(), 0)
 
 class TestDuplicatePrevention(unittest.TestCase):
-    """Verify Checkpoint 5.5: idempotent re-scans and incremental log ingestion."""
+    """Verify idempotent re-scans and incremental log ingestion."""
 
     def setUp(self) -> None:
         """Create a fresh initialized test database for each test."""
@@ -277,7 +277,7 @@ class TestHistoricalQueries(unittest.TestCase):
         self.assertEqual(len(stats["recent_scan_runs"]), 1)
 
 class TestDatabaseIndexes(unittest.TestCase):
-    """Verify Checkpoint 5.7: SQLite indexes and query planner usage."""
+    """Verify SQLite indexes and query planner usage."""
 
     def setUp(self) -> None:
         """Create a fresh initialized test database."""

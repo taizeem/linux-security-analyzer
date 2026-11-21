@@ -13,7 +13,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestDetectionEngine(unittest.TestCase):
-    """Verify Checkpoint 4.1–4.4: orchestration, severity levels, and evidence."""
+    """Verify orchestration, severity levels, and evidence."""
 
     @classmethod
     def setUpClass(cls) -> None:
