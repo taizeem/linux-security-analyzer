@@ -14,7 +14,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestConfigurationAndRules(unittest.TestCase):
-    """Verify Checkpoint 4.2: JSON config loading, validation, and rule toggles."""
+    """Verify JSON config loading, validation, and rule toggles."""
 
     def test_load_default_and_example_config(self) -> None:
         """Verify defaults and config.example.json load cleanly into AppConfig."""

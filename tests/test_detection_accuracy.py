@@ -1,5 +1,3 @@
-"""Accuracy and false-positive tests for DetectionEngine (Checkpoint 4.5)."""
-
 from pathlib import Path
 import unittest
 

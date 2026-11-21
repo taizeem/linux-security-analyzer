@@ -21,7 +21,7 @@ SAMPLE_LOG = PROJECT_ROOT / "sample_logs" / "auth_sample.log"
 
 
 class TestFailedSshDetection(unittest.TestCase):
-    """Verify Checkpoint 3.1: failed SSH login detection and IP grouping."""
+    """Verify failed SSH login detection and IP grouping."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -64,7 +64,7 @@ class TestFailedSshDetection(unittest.TestCase):
 
 
 class TestSuccessfulSshDetection(unittest.TestCase):
-    """Verify Checkpoint 3.2: successful SSH login detection and user grouping."""
+    """Verify successful SSH login detection and user grouping."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -103,7 +103,7 @@ class TestSuccessfulSshDetection(unittest.TestCase):
 
 
 class TestInvalidUserDetection(unittest.TestCase):
-    """Verify Checkpoint 3.3: invalid username and multi-user enumeration detection."""
+    """Verify invalid username and multi-user enumeration detection."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -159,7 +159,7 @@ class TestInvalidUserDetection(unittest.TestCase):
 
 
 class TestRepeatedSshFailuresDetection(unittest.TestCase):
-    """Verify Checkpoint 3.4: sliding-window repeated SSH failure detection."""
+    """Verify sliding-window repeated SSH failure detection."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -211,7 +211,7 @@ class TestRepeatedSshFailuresDetection(unittest.TestCase):
 
 
 class TestSuccessAfterFailuresDetection(unittest.TestCase):
-    """Verify Checkpoint 3.5: successful login after repeated failures detection."""
+    """Verify successful login after repeated failures detection."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -279,7 +279,7 @@ class TestSuccessAfterFailuresDetection(unittest.TestCase):
 
 
 class TestSudoDetection(unittest.TestCase):
-    """Verify Checkpoint 3.6: sudo command and repeated sudo failure detection."""
+    """Verify sudo command and repeated sudo failure detection."""
 
     @classmethod
     def setUpClass(cls) -> None:
