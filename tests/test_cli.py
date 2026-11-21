@@ -467,5 +467,17 @@ class TestCliErrorPaths(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("not found", err_buf.getvalue().lower())
 
+    def test_corrupted_sqlite_database_returns_clean_exit_code_one(self) -> None:
+        """Verify corrupted SQLite file prints clean Database error and exits 1."""
+        corrupted_db = self.base_path / "corrupted.db"
+        corrupted_db.write_text("not a sqlite database", encoding="utf-8")
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(["stats", "--db", str(corrupted_db)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("database error", err_buf.getvalue().lower())
+
 if __name__ == "__main__":
     unittest.main()

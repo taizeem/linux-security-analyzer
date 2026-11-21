@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import sys
+import sqlite3
 from typing import Optional, Sequence
 
 from security_analyzer import __app_name__, __version__
@@ -561,6 +562,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         return int(handler(args))
+    except sqlite3.Error as exc:
+        print(f"Error: Database error: {exc}", file=sys.stderr)
+        return 1
     except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
